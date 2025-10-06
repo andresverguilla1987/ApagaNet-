@@ -1,7 +1,7 @@
 {
   "name": "apaganet-backend",
-  "version": "0.2.3-pg-jwt",
-  "description": "ApagaNet backend (Express + PostgreSQL + JWT)",
+  "version": "0.3.0-ready",
+  "description": "ApagaNet backend (Express + PostgreSQL + JWT) - ready to run on Render",
   "type": "module",
   "main": "server.js",
   "scripts": {

@@ -1,5 +1,4 @@
--- src/migrations/001_base.sql (ApagaNet) — DO NOT TRANSLATE
-
+-- 001_base.sql
 create extension if not exists "uuid-ossp";
 create extension if not exists "pgcrypto";
 
@@ -22,7 +21,6 @@ create table if not exists devices (
   updated_at timestamptz default now(),
   created_at timestamptz default now()
 );
-
 create index if not exists idx_devices_user on devices(user_id);
 
 create table if not exists schedules (
@@ -35,7 +33,6 @@ create table if not exists schedules (
   active boolean default true,
   created_at timestamptz default now()
 );
-
 create index if not exists idx_schedules_user on schedules(user_id);
 create index if not exists idx_schedules_device on schedules(device_id);
 

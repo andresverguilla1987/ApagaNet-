@@ -1,25 +1,38 @@
-# ApagaNet Backend — JWT Ready (v0.2.2)
+# ApagaNet Backend — Ready Pack
 
-Este paquete reemplaza tu backend con **PostgreSQL + JWT** listo:
-- `server.js` con CORS fino, helmet, rate-limit, compression, rutas protegidas.
-- `src/lib/authz.js` (middleware JWT)
-- `src/routes/auth.js` (devuelve token)
-- `src/routes/devices.js` y `schedules.js` usan `req.userId` (no x-user-id)
-- `package.json` trae `jsonwebtoken`
-
-## Variables necesarias (Render → Environment)
-- `DATABASE_URL=postgres://...`
-- `JWT_SECRET=<tu secreto largo>`
-- `CORS_ORIGINS=https://tu-frontend.netlify.app,https://harmonious-dragon-71a2fa.netlify.app,http://localhost:5173`
-- `APP_NAME=ApagaNet`
-- `APP_ENV=prod`
+## 1) Variables de entorno
+- `DATABASE_URL` (PostgreSQL de Render)
+- `JWT_SECRET` (cadena larga)
+- `TASK_SECRET` (para /tasks/run-scheduler)
+- `CORS_ORIGINS` (coma sin espacios) — opcional
 - `PORT=10000`
-- (opcional) `TASK_SECRET=...` para el cron
 
-## Deploy
-1) Sube estos archivos a la **raíz** del repo (reemplazando los existentes).
-2) `git add . && git commit -m "jwt ready v0.2.2" && git push`
-3) En Render: **Manual Deploy → Clear build cache & deploy**
-4) Prueba `/ping` y luego el flujo:
-   - `POST /auth/login` → recibe `token`
-   - Usar `Authorization: Bearer <token>` en `/devices` y `/schedules`
+## 2) Migraciones
+- Render → Web Service → Shell (ubicación /opt/render/project/src)
+```bash
+npm run migrate
+```
+
+## 3) Arranque
+Render usará `npm start` automáticamente. Local:
+```bash
+cp .env.example .env
+npm install
+npm run migrate
+npm start
+```
+
+## 4) Probar
+- Login:
+```bash
+curl -s -X POST http://localhost:10000/auth/login     -H 'Content-Type: application/json'     -d '{"email":"demo@apaganet.app","name":"Demo"}'
+```
+- Con el token, listar/crear devices:
+```bash
+TOKEN=...
+curl -s http://localhost:10000/devices -H "Authorization: Bearer $TOKEN"
+```
+- Scheduler (POST + TASK_SECRET):
+```bash
+curl -s -X POST http://localhost:10000/tasks/run-scheduler     -H "Authorization: Bearer TU_TASK_SECRET"
+```

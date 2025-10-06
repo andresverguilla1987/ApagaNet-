@@ -1,4 +1,4 @@
-// scripts/migrate.js — DO NOT TRANSLATE
+// scripts/migrate.js — applies all SQL files in src/migrations
 import fs from "fs";
 import path from "path";
 import url from "url";
@@ -9,10 +9,7 @@ const MIGRATIONS_DIR = path.join(__dirname, "..", "src", "migrations");
 
 const { Pool } = pg;
 const cn = process.env.DATABASE_URL;
-if (!cn) {
-  console.error("❌ Missing DATABASE_URL env var.");
-  process.exit(1);
-}
+if (!cn) { console.error("❌ Missing DATABASE_URL"); process.exit(1); }
 
 const pool = new Pool({
   connectionString: cn,
@@ -20,23 +17,15 @@ const pool = new Pool({
 });
 
 async function run() {
-  const files = fs.readdirSync(MIGRATIONS_DIR)
-    .filter(f => f.endsWith(".sql"))
-    .sort();
-
+  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f=>f.endsWith(".sql")).sort();
   console.log("🔧 Applying migrations:", files);
-
   for (const f of files) {
     const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, f), "utf8");
     console.log("➡️  Running", f);
     await pool.query(sql);
   }
-
   await pool.end();
   console.log("✅ Done");
 }
 
-run().catch(e => {
-  console.error("💥 Migration error:", e);
-  process.exit(1);
-});
+run().catch(e=>{ console.error("💥 Migration error:", e); process.exit(1); });

@@ -1,63 +1,25 @@
-// src/routes/devices.js — CRUD dispositivos (Postgres + JWT req.userId)
 import express from "express";
 import { pool } from "../lib/db.js";
+
 const router = express.Router();
 
-router.get("/", async (req, res) => {
-  const userId = req.userId;
-  try {
-    const r = await pool.query("select * from devices where user_id = $1 order by created_at desc", [userId]);
-    res.json({ ok:true, devices: r.rows });
-  } catch (e) {
-    res.status(500).json({ ok:false, error:String(e) });
-  }
+router.get("/", async (req,res)=>{
+  try{
+    const r=await pool.query("select d.* from devices d where d.user_id=$1 order by d.created_at desc", [req.user.id]);
+    res.json({ ok:true, devices:r.rows });
+  }catch(e){ res.status(500).json({ ok:false, error:String(e) });}
 });
 
-router.post("/", async (req, res) => {
-  const userId = req.userId;
-  const { name, mac, vendor } = req.body || {};
-  if (!name || !mac) return res.status(400).json({ ok:false, error:"name y mac requeridos" });
-  try {
-    const r = await pool.query(
-      "insert into devices(user_id, name, mac, vendor) values ($1,$2,upper($3),$4) returning *",
-      [userId, name, mac, vendor || null]
+router.post("/", async (req,res)=>{
+  try{
+    const { name, mac, vendor } = req.body || {};
+    if(!name||!mac) return res.status(400).json({ ok:false, error:"name and mac required" });
+    const r=await pool.query(
+      "insert into devices(user_id,name,mac,vendor) values ($1,$2,$3,$4) returning *",
+      [req.user.id, name, mac, vendor||null]
     );
-    res.json({ ok:true, device: r.rows[0] });
-  } catch (e) {
-    res.status(500).json({ ok:false, error:String(e) });
-  }
-});
-
-router.patch("/:id", async (req, res) => {
-  const userId = req.userId;
-  const { id } = req.params;
-  const { name, mac, vendor } = req.body || {};
-  try {
-    const r = await pool.query(
-      `update devices set
-         name = coalesce($1, name),
-         mac = coalesce(upper($2), mac),
-         vendor = coalesce($3, vendor)
-       where id = $4 and user_id = $5
-       returning *`,
-      [name || null, mac || null, vendor || null, id, userId]
-    );
-    if (!r.rowCount) return res.status(404).json({ ok:false, error:"no encontrado" });
-    res.json({ ok:true, device: r.rows[0] });
-  } catch (e) {
-    res.status(500).json({ ok:false, error:String(e) });
-  }
-});
-
-router.delete("/:id", async (req, res) => {
-  const userId = req.userId;
-  const { id } = req.params;
-  try {
-    const r = await pool.query("delete from devices where id=$1 and user_id=$2", [id, userId]);
-    res.json({ ok: r.rowCount > 0 });
-  } catch (e) {
-    res.status(500).json({ ok:false, error:String(e) });
-  }
+    res.json({ ok:true, device:r.rows[0] });
+  }catch(e){ res.status(500).json({ ok:false, error:String(e) });}
 });
 
 export default router;
