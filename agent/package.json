@@ -1,0 +1,17 @@
+{
+  "name": "apaganet-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "ssh2": "^1.15.0",
+    "tough-cookie": "^4.1.4",
+    "axios-cookiejar-support": "^6.0.2",
+    "dotenv": "^16.4.5"
+  }
+}

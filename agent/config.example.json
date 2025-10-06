@@ -1,0 +1,13 @@
+{
+  "homeId": "hogar-123",
+  "apiBase": "https://apaganet-zmsa.onrender.com",
+  "apiToken": "AGENT_TOKEN_GENERADO_EN_BACKEND",
+  "pollSeconds": 30,
+  "router": {
+    "type": "openwrt",
+    "host": "192.168.1.1",
+    "username": "root",
+    "password": "tu_clave",
+    "ifaceIndex": 0
+  }
+}
