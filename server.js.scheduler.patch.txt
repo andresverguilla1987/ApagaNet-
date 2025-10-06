@@ -1,0 +1,14 @@
+// server.js — agrega este import:
+import { runScheduler } from "./src/lib/scheduler.js";
+
+// y reemplaza tu endpoint de cron por este:
+app.post("/tasks/run-scheduler", async (req, res) => {
+  if (req.headers.authorization !== `Bearer ${process.env.TASK_SECRET}`) return res.sendStatus(401);
+  try {
+    const result = await runScheduler({});
+    return res.json(result);
+  } catch (e) {
+    console.error("scheduler error:", e);
+    return res.status(500).json({ ok:false, error:String(e) });
+  }
+});
