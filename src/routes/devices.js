@@ -1,34 +1,67 @@
-// src/routes/devices.js
+// src/routes/devices.js — CRUD dispositivos (Postgres)
 import express from "express";
-import { mem, create, listBy, updateById, removeById } from "../lib/dbMem.js";
+import { pool } from "../lib/db.js";
 const router = express.Router();
-router.get("/", (req, res) => {
+
+router.get("/", async (req, res) => {
   const userId = req.headers["x-user-id"];
-  if (!userId) return res.status(401).json({ ok: false, error: "x-user-id requerido" });
-  res.json({ ok: true, devices: listBy("devices", { userId }) });
+  if (!userId) return res.status(401).json({ ok:false, error:"x-user-id requerido" });
+  try {
+    const r = await pool.query("select * from devices where user_id = $1 order by created_at desc", [userId]);
+    res.json({ ok:true, devices: r.rows });
+  } catch (e) {
+    res.status(500).json({ ok:false, error:String(e) });
+  }
 });
-router.post("/", (req, res) => {
+
+router.post("/", async (req, res) => {
   const userId = req.headers["x-user-id"];
   const { name, mac, vendor } = req.body || {};
-  if (!userId) return res.status(401).json({ ok: false, error: "x-user-id requerido" });
-  if (!name || !mac) return res.status(400).json({ ok: false, error: "name y mac requeridos" });
-  const d = create("devices", { userId, name, mac: mac.toUpperCase(), vendor: vendor || null });
-  res.json({ ok: true, device: d });
+  if (!userId) return res.status(401).json({ ok:false, error:"x-user-id requerido" });
+  if (!name || !mac) return res.status(400).json({ ok:false, error:"name y mac requeridos" });
+  try {
+    const r = await pool.query(
+      "insert into devices(user_id, name, mac, vendor) values ($1,$2,upper($3),$4) returning *",
+      [userId, name, mac, vendor || null]
+    );
+    res.json({ ok:true, device: r.rows[0] });
+  } catch (e) {
+    res.status(500).json({ ok:false, error:String(e) });
+  }
 });
-router.patch("/:id", (req, res) => {
+
+router.patch("/:id", async (req, res) => {
   const userId = req.headers["x-user-id"];
   const { id } = req.params;
-  const device = mem.devices.find(d => d.id === id);
-  if (!device || device.userId !== userId) return res.status(404).json({ ok: false, error: "no encontrado" });
-  const out = updateById("devices", id, req.body || {});
-  res.json({ ok: true, device: out });
+  const { name, mac, vendor } = req.body || {};
+  if (!userId) return res.status(401).json({ ok:false, error:"x-user-id requerido" });
+  try {
+    const r = await pool.query(
+      `update devices set
+         name = coalesce($1, name),
+         mac = coalesce(upper($2), mac),
+         vendor = coalesce($3, vendor)
+       where id = $4 and user_id = $5
+       returning *`,
+      [name || null, mac || null, vendor || null, id, userId]
+    );
+    if (!r.rowCount) return res.status(404).json({ ok:false, error:"no encontrado" });
+    res.json({ ok:true, device: r.rows[0] });
+  } catch (e) {
+    res.status(500).json({ ok:false, error:String(e) });
+  }
 });
-router.delete("/:id", (req, res) => {
+
+router.delete("/:id", async (req, res) => {
   const userId = req.headers["x-user-id"];
   const { id } = req.params;
-  const device = mem.devices.find(d => d.id === id);
-  if (!device || device.userId !== userId) return res.status(404).json({ ok: false, error: "no encontrado" });
-  const ok = removeById("devices", id);
-  res.json({ ok });
+  if (!userId) return res.status(401).json({ ok:false, error:"x-user-id requerido" });
+  try {
+    const r = await pool.query("delete from devices where id=$1 and user_id=$2", [id, userId]);
+    res.json({ ok: r.rowCount > 0 });
+  } catch (e) {
+    res.status(500).json({ ok:false, error:String(e) });
+  }
 });
+
 export default router;

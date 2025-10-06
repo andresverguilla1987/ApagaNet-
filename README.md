@@ -1,27 +1,30 @@
-# ApagaNet Backend (Render Ready v0.1.1)
+# ApagaNet Backend — PostgreSQL (v0.2.0)
 
-Estructura en la RAÍZ (no subcarpeta). Lista para Render (runtime Node, sin Docker).
+Backend listo para Render + Postgres.
+
+## Variables de entorno
+- `DATABASE_URL` → la URL de tu base de datos PostgreSQL en Render
+- `PORT` → 10000 (Render asigna una, pero dejamos default)
+- `APP_NAME`, `APP_ENV`
+- `TASK_SECRET` → para el endpoint de cron `/tasks/run-scheduler`
+- `CORS_ORIGINS` → dominios permitidos (coma separada)
+
+## Migración
+```bash
+npm install
+npm run migrate
+npm run dev
+```
+
+En Render:
+- Add → PostgreSQL (Free)
+- Copia la `External Database URL` en `DATABASE_URL`
+- Deploy → (opcional) ejecuta `npm run migrate` local o temporalmente con un Shell
 
 ## Endpoints
-- GET /ping
-- GET /diag
-- POST /auth/login { email, name? }
-- GET/POST/PATCH/DELETE /devices
-- GET/POST/PATCH/DELETE /schedules
-
-## Local
-npm install
-cp .env.example .env
-npm run dev
-
-## Render (Node runtime)
-- Build Command: npm install
-- Start Command: node server.js
-- Env Vars:
-    APP_NAME=ApagaNet
-    APP_ENV=prod
-    PORT=10000
-    JWT_SECRET=apaganet-secret-dev
-
-Si Render te muestra 502, verifica que el repo tenga `server.js` y `package.json` en la raíz,
-y que las rutas existan en `src/routes/*.js`.
+- GET `/ping`  → prueba de vida + DB
+- GET `/diag`  → diagnóstico
+- POST `/auth/login` { email, name? } → upsert usuario
+- GET/POST/PATCH/DELETE `/devices`
+- GET/POST/PATCH/DELETE `/schedules`
+- POST `/tasks/run-scheduler` (requiere `Authorization: Bearer TASK_SECRET`)
