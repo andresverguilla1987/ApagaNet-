@@ -1,5 +1,6 @@
-// src/routes/auth.js — login/upsert usuario
+// src/routes/auth.js — login/upsert usuario + JWT
 import express from "express";
+import jwt from "jsonwebtoken";
 import { pool } from "../lib/db.js";
 const router = express.Router();
 
@@ -13,7 +14,9 @@ router.post("/login", async (req, res) => {
        returning *`,
       [email, name || null]
     );
-    res.json({ ok:true, user: upsert.rows[0] });
+    const user = upsert.rows[0];
+    const token = jwt.sign({ uid: user.id }, process.env.JWT_SECRET, { expiresIn: "30d" });
+    res.json({ ok:true, user, token });
   } catch (e) {
     res.status(500).json({ ok:false, error: String(e) });
   }

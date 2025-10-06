@@ -1,0 +1,5 @@
+# package.json — agrega la dependencia:
+"dependencies": {
+  ...
+  "jsonwebtoken": "^9.0.2"
+}

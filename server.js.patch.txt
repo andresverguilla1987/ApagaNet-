@@ -1,0 +1,10 @@
+// server.js — añade esto en la parte superior junto a otros imports:
+import { requireAuth } from "./src/lib/authz.js";
+
+// y reemplaza estas líneas:
+// app.use("/devices", devices);
+// app.use("/schedules", schedules);
+
+// por estas (protegiendo con JWT):
+app.use("/devices", requireAuth, devices);
+app.use("/schedules", requireAuth, schedules);
