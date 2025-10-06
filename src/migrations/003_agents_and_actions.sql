@@ -1,4 +1,5 @@
--- 003_agents_and_actions.sql — soporte para agentes y cola de acciones
+-- src/migrations/003_agents_and_actions.sql — DO NOT TRANSLATE
+
 create table if not exists homes (
   id uuid primary key default gen_random_uuid(),
   user_id uuid references users(id) on delete cascade,
@@ -19,7 +20,7 @@ create table if not exists actions (
   device_id uuid references devices(id) on delete cascade,
   mac text not null,
   type text not null check (type in ('block','unblock')),
-  status text not null default 'pending', -- pending|done|failed
+  status text not null default 'pending',
   error text,
   created_at timestamptz default now(),
   processed_at timestamptz

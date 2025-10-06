@@ -1,10 +1,8 @@
--- 001_base.sql — tablas y extensiones base para ApagaNet
+-- src/migrations/001_base.sql (ApagaNet) — DO NOT TRANSLATE
 
--- Extensiones necesarias para UUID
 create extension if not exists "uuid-ossp";
 create extension if not exists "pgcrypto";
 
--- Usuarios
 create table if not exists users (
   id uuid primary key default gen_random_uuid(),
   email text unique not null,
@@ -14,7 +12,6 @@ create table if not exists users (
   created_at timestamptz default now()
 );
 
--- Dispositivos
 create table if not exists devices (
   id uuid primary key default gen_random_uuid(),
   user_id uuid references users(id) on delete cascade,
@@ -26,7 +23,8 @@ create table if not exists devices (
   created_at timestamptz default now()
 );
 
--- Horarios
+create index if not exists idx_devices_user on devices(user_id);
+
 create table if not exists schedules (
   id uuid primary key default gen_random_uuid(),
   user_id uuid references users(id) on delete cascade,
@@ -38,7 +36,9 @@ create table if not exists schedules (
   created_at timestamptz default now()
 );
 
--- Auditoría del scheduler
+create index if not exists idx_schedules_user on schedules(user_id);
+create index if not exists idx_schedules_device on schedules(device_id);
+
 create table if not exists schedule_runs (
   id bigserial primary key,
   ran_at timestamptz not null default now(),
@@ -46,8 +46,3 @@ create table if not exists schedule_runs (
   set_blocked int not null,
   set_unblocked int not null
 );
-
--- Índices útiles
-create index if not exists idx_devices_user on devices(user_id);
-create index if not exists idx_schedules_user on schedules(user_id);
-create index if not exists idx_schedules_device on schedules(device_id);
