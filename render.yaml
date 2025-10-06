@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: apaganet-backend
+    env: node
+    branch: main
+    buildCommand: "npm install"
+    startCommand: "node server.js"
+    rootDir: "."
+    plan: free

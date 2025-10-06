@@ -1,4 +1,4 @@
-// server.js
+// server.js — ApagaNet backend ready for Render
 import "dotenv/config";
 import express from "express";
 import morgan from "morgan";
@@ -20,13 +20,12 @@ app.get("/ping", (_req, res) => {
   res.json({
     ok: true,
     app: process.env.APP_NAME || "ApagaNet",
-    version: "0.1.0",
+    version: "0.1.1",
     env: process.env.APP_ENV || "dev",
     port: PORT
   });
 });
 
-// Diagnóstico simple
 app.get("/diag", (_req, res) => {
   res.json({
     ok: true,
@@ -44,10 +43,7 @@ app.use("/auth", auth);
 app.use("/devices", devices);
 app.use("/schedules", schedules);
 
-// Errores no atrapados
 process.on("unhandledRejection", (e) => console.error("unhandledRejection", e));
 process.on("uncaughtException", (e) => console.error("uncaughtException", e));
 
-app.listen(PORT, "0.0.0.0", () =>
-  console.log(`ApagaNet API listening on :${PORT}`)
-);
+app.listen(PORT, "0.0.0.0", () => console.log(`ApagaNet API listening on :${PORT}`));
