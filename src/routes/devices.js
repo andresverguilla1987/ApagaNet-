@@ -1,11 +1,10 @@
-// src/routes/devices.js — CRUD dispositivos (Postgres)
+// src/routes/devices.js — CRUD dispositivos (Postgres + JWT req.userId)
 import express from "express";
 import { pool } from "../lib/db.js";
 const router = express.Router();
 
 router.get("/", async (req, res) => {
-  const userId = req.headers["x-user-id"];
-  if (!userId) return res.status(401).json({ ok:false, error:"x-user-id requerido" });
+  const userId = req.userId;
   try {
     const r = await pool.query("select * from devices where user_id = $1 order by created_at desc", [userId]);
     res.json({ ok:true, devices: r.rows });
@@ -15,9 +14,8 @@ router.get("/", async (req, res) => {
 });
 
 router.post("/", async (req, res) => {
-  const userId = req.headers["x-user-id"];
+  const userId = req.userId;
   const { name, mac, vendor } = req.body || {};
-  if (!userId) return res.status(401).json({ ok:false, error:"x-user-id requerido" });
   if (!name || !mac) return res.status(400).json({ ok:false, error:"name y mac requeridos" });
   try {
     const r = await pool.query(
@@ -31,10 +29,9 @@ router.post("/", async (req, res) => {
 });
 
 router.patch("/:id", async (req, res) => {
-  const userId = req.headers["x-user-id"];
+  const userId = req.userId;
   const { id } = req.params;
   const { name, mac, vendor } = req.body || {};
-  if (!userId) return res.status(401).json({ ok:false, error:"x-user-id requerido" });
   try {
     const r = await pool.query(
       `update devices set
@@ -53,9 +50,8 @@ router.patch("/:id", async (req, res) => {
 });
 
 router.delete("/:id", async (req, res) => {
-  const userId = req.headers["x-user-id"];
+  const userId = req.userId;
   const { id } = req.params;
-  if (!userId) return res.status(401).json({ ok:false, error:"x-user-id requerido" });
   try {
     const r = await pool.query("delete from devices where id=$1 and user_id=$2", [id, userId]);
     res.json({ ok: r.rowCount > 0 });

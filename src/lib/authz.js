@@ -1,6 +1,5 @@
 // src/lib/authz.js — JWT middleware
 import jwt from "jsonwebtoken";
-
 export function requireAuth(req, res, next){
   try {
     const h = req.headers.authorization || "";
