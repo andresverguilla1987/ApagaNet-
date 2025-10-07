@@ -1,14 +1,20 @@
 {
   "name": "apaganet-agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
+  "description": "Agente de ApagaNET: consulta acciones al backend y ejecuta bloqueos en el router.",
   "type": "module",
   "main": "agent.js",
   "scripts": {
-    "start": "node agent.js"
+    "start": "node agent.js",
+    "dev": "NODE_ENV=development node agent.js",
+    "once": "node agent.js --once"
   },
   "dependencies": {
+    "axios": "^1.7.7",
+    "cron": "^3.1.7",
     "dotenv": "^16.4.5",
-    "cron": "^3.1.7"
+    "uuid": "^9.0.1",
+    "winston": "^3.13.0"
   },
   "engines": {
     "node": ">=18.x"
