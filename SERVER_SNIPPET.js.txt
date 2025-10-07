@@ -1,0 +1,3 @@
+// server.js snippet
+import agents from "./src/routes/agents.js";
+app.use("/agents", agents);
