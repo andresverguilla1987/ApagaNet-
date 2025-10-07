@@ -1,0 +1,12 @@
+{
+  "backend": "https://apaganet-zmsa.onrender.com",
+  "agentToken": "REEMPLAZA_CON_TOKEN_DEL_AGENT",
+  "homeId": "hogar-123",
+  "interval": 60,
+  "router": {
+    "type": "openwrt",
+    "url": "http://192.168.1.1",
+    "user": "root",
+    "pass": "admin"
+  }
+}
