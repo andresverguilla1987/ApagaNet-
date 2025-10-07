@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>ApagaNet · Admin</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root { --bg:#0b1220; --card:#111827; --fg:#e5e7eb; --muted:#9ca3af; --accent:#22d3ee; }
+    *{box-sizing:border-box} body{margin:0;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--fg)}
+    header{padding:16px 20px;border-bottom:1px solid #1f2937;display:flex;gap:12px;align-items:center}
+    header h1{font-size:18px;margin:0} header .dot{width:10px;height:10px;border-radius:50%;background:var(--accent)}
+    main{max-width:980px;margin:24px auto;padding:0 16px;display:grid;gap:16px}
+    .card{background:var(--card);border:1px solid #1f2937;border-radius:14px;padding:16px}
+    .row{display:flex;gap:10px;flex-wrap:wrap}
+    input,button,select,textarea{background:#0b1020;border:1px solid #273046;color:var(--fg);padding:10px 12px;border-radius:10px}
+    button{cursor:pointer} button.primary{background:#0ea5e9;border-color:#0ea5e9;color:#001423;font-weight:600}
+    label{font-size:12px;color:var(--muted)} h2{margin:0 0 12px 0;font-size:16px}
+    table{width:100%;border-collapse:collapse;margin-top:10px} th,td{border-bottom:1px solid #1f2937;padding:8px;text-align:left;font-size:14px}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+    .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
+    .hint{font-size:12px;color:var(--muted)}
+  </style>
+</head>
+<body>
+  <header><div class="dot"></div><h1>ApagaNet · Admin</h1></header>
+  <main>
+    <section class="card">
+      <h2>1) Admin login</h2>
+      <div class="row">
+        <div style="flex:1 1 260px">
+          <label for="task">TASK_SECRET</label>
+          <input id="task" type="password" placeholder="Pega tu TASK_SECRET" style="width:100%">
+          <div class="hint">Sólo se usa en el navegador para firmar las llamadas a /admin/*</div>
+        </div>
+        <div>
+          <label>&nbsp;</label>
+          <button class="primary" id="loginBtn">Guardar</button>
+        </div>
+      </div>
+      <div class="hint">Estado: <span id="authState">No autenticado</span></div>
+    </section>
+
+    <section class="card grid">
+      <div>
+        <h2>2) Crear Home</h2>
+        <div class="row">
+          <div style="flex:1 1 200px">
+            <label for="userId">User ID (uuid)</label>
+            <input id="userId" placeholder="uuid del usuario" style="width:100%">
+          </div>
+          <div style="flex:1 1 160px">
+            <label for="homeName">Nombre (opcional)</label>
+            <input id="homeName" placeholder="Casa principal" style="width:100%">
+          </div>
+          <div>
+            <label>&nbsp;</label>
+            <button class="primary" id="createHomeBtn">Crear</button>
+          </div>
+        </div>
+        <div class="hint">Respuesta:</div>
+        <pre id="homeResp" class="mono" style="white-space:pre-wrap"></pre>
+      </div>
+
+      <div>
+        <h2>3) Crear Agent</h2>
+        <div class="row">
+          <div style="flex:1 1 260px">
+            <label for="homeId">HOME_ID (uuid)</label>
+            <input id="homeId" placeholder="uuid del home" style="width:100%">
+          </div>
+          <div>
+            <label>&nbsp;</label>
+            <button class="primary" id="createAgentBtn">Crear</button>
+          </div>
+        </div>
+        <div class="hint">Respuesta (guarda el <b>api_token</b> como AGENT_TOKEN en el agente):</div>
+        <pre id="agentResp" class="mono" style="white-space:pre-wrap"></pre>
+      </div>
+    </section>
+
+    <section class="card grid">
+      <div>
+        <h2>Homes</h2>
+        <button id="listHomesBtn">Actualizar</button>
+        <table id="homesTbl"><thead><tr><th>ID</th><th>User</th><th>Nombre</th><th>Creado</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div>
+        <h2>Agents</h2>
+        <button id="listAgentsBtn">Actualizar</button>
+        <table id="agentsTbl"><thead><tr><th>ID</th><th>Home</th><th>Creado</th></tr></thead><tbody></tbody></table>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const S = {
+      get token(){ return localStorage.getItem('apaganet_admin_token') || ''},
+      set token(v){ localStorage.setItem('apaganet_admin_token', v) }
+    };
+
+    const authState = document.getElementById('authState');
+    const taskInput = document.getElementById('task');
+    document.getElementById('loginBtn').onclick = () => {
+      S.token = taskInput.value.trim();
+      authState.textContent = S.token ? 'Listo' : 'No autenticado';
+    };
+    authState.textContent = S.token ? 'Listo' : 'No autenticado';
+
+    async function call(path, opts={}){
+      const res = await fetch(path, {
+        ...opts,
+        headers: {
+          'Authorization': 'Bearer ' + (S.token || ''),
+          ...(opts.headers||{})
+        }
+      });
+      const text = await res.text();
+      let data; try { data = JSON.parse(text) } catch { data = text }
+      if (!res.ok) throw new Error(typeof data==='string'? data : (data.error || 'error'));
+      return data;
+    }
+
+    // Crear Home
+    document.getElementById('createHomeBtn').onclick = async () => {
+      const user_id = document.getElementById('userId').value.trim();
+      const name = document.getElementById('homeName').value.trim() || undefined;
+      try {
+        const out = await call('/admin/homes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id, name })
+        });
+        document.getElementById('homeResp').textContent = JSON.stringify(out, null, 2);
+        document.getElementById('homeId').value = out?.home?.id || '';
+        await listHomes();
+      } catch(e){ document.getElementById('homeResp').textContent = 'Error: '+e.message; }
+    };
+
+    // Crear Agent
+    document.getElementById('createAgentBtn').onclick = async () => {
+      const home_id = document.getElementById('homeId').value.trim();
+      try {
+        const out = await call('/admin/agents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ home_id })
+        });
+        document.getElementById('agentResp').textContent = JSON.stringify(out, null, 2);
+        await listAgents();
+      } catch(e){ document.getElementById('agentResp').textContent = 'Error: '+e.message; }
+    };
+
+    async function listHomes(){
+      const out = await call('/admin/homes');
+      const tb = document.querySelector('#homesTbl tbody'); tb.innerHTML='';
+      for (const h of (out.homes||[])){
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td class="mono">'+h.id+'</td><td>'+h.user_id+'</td><td>'+ (h.name||'') +'</td><td>'+ new Date(h.created_at).toLocaleString() +'</td>';
+        tb.appendChild(tr);
+      }
+    }
+    async function listAgents(){
+      const out = await call('/admin/agents');
+      const tb = document.querySelector('#agentsTbl tbody'); tb.innerHTML='';
+      for (const a of (out.agents||[])){
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td class="mono">'+a.id+'</td><td>'+a.home_id+'</td><td>'+ new Date(a.created_at).toLocaleString() +'</td>';
+        tb.appendChild(tr);
+      }
+    }
+
+    document.getElementById('listHomesBtn').onclick = listHomes;
+    document.getElementById('listAgentsBtn').onclick = listAgents;
+  </script>
+</body>
+</html>
