@@ -1,4 +1,4 @@
-// server.js — ApagaNet backend
+// server.js — ApagaNet backend (con /agents)
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -12,22 +12,18 @@ import { pool } from "./src/lib/db.js";
 import auth from "./src/routes/auth.js";
 import devices from "./src/routes/devices.js";
 import schedules from "./src/routes/schedules.js";
-// NUEVO: endpoints de agente (si aplicaste el patch que te pasé)
 import agents from "./src/routes/agents.js";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 10000;
 
-// Parseo fino de CORS_ORIGINS (coma o espacios)
+// CORS_ORIGINS puede separarse por comas o espacios
 const ORIGINS = (process.env.CORS_ORIGINS || "")
-  .split(/[,\s]+/)
-  .map((s) => s.trim())
+  .split(/[\s,]+/)
+  .map(s => s.trim())
   .filter(Boolean);
 
-// Recomendado en Render/Heroku para logs/ratelimit detrás de proxy
 app.set("trust proxy", 1);
-
-// Middlewares base
 app.use(helmet());
 app.use(cors(ORIGINS.length ? { origin: ORIGINS } : {}));
 app.use(express.json());
@@ -52,11 +48,7 @@ app.get("/ping", async (_req, res) => {
   }
 });
 
-// ---------- Auth middleware ----------
-/**
- * Para endpoints de la app (panel): requiere JWT (usuarios)
- * Header: Authorization: Bearer <JWT>
- */
+// ---------- Middlewares de auth ----------
 export function requireJWT(req, res, next) {
   const h = req.headers.authorization || "";
   const token = h.startsWith("Bearer ") ? h.slice(7) : null;
@@ -69,11 +61,6 @@ export function requireJWT(req, res, next) {
   }
 }
 
-/**
- * Para endpoints del agente (router/daemon): requiere AGENT_TOKEN
- * Header: Authorization: Bearer <AGENT_TOKEN>
- * Valida contra la tabla agents.api_token y adjunta req.agent / req.homeId
- */
 export async function requireAgent(req, res, next) {
   const h = req.headers.authorization || "";
   const token = h.startsWith("Bearer ") ? h.slice(7) : null;
@@ -92,10 +79,6 @@ export async function requireAgent(req, res, next) {
   }
 }
 
-/**
- * Para cron/tareas internas: requiere TASK_SECRET exacto
- * Header: Authorization: Bearer <TASK_SECRET>
- */
 export function requireTaskSecret(req, res, next) {
   const h = req.headers.authorization || "";
   const token = h.startsWith("Bearer ") ? h.slice(7) : null;
@@ -110,22 +93,16 @@ app.use("/auth", auth);
 app.use("/devices", requireJWT, devices);
 app.use("/schedules", requireJWT, schedules);
 
-// Rutas del agente (protegidas con requireAgent)
-// - GET /agents/next-actions?homeId=...  (homeId opcional: si no lo mandas, usa req.homeId)
-// - POST /agents/report                   (body: { homeId, results: [...] })
+// /agents protegido por token de agente
 app.use("/agents", requireAgent, (req, _res, next) => {
-  // Si el agente no mandó homeId, inyectamos el suyo a query/body para el router
   if (!req.query.homeId && req.homeId) req.query.homeId = req.homeId;
   if (req.body && !req.body.homeId && req.homeId) req.body.homeId = req.homeId;
   next();
 }, agents);
 
-// ---------- Tarea programada (cron) ----------
+// Cron protegido por TASK_SECRET
 app.post("/tasks/run-scheduler", requireTaskSecret, async (_req, res) => {
-  // Demo: registra ejecución; aquí pondrás la lógica real que evalúa schedules
-  const checked = 0,
-    set_blocked = 0,
-    set_unblocked = 0;
+  const checked = 0, set_blocked = 0, set_unblocked = 0;
   await pool.query(
     "insert into schedule_runs(ran_at,checked,set_blocked,set_unblocked) values (now(),$1,$2,$3)",
     [checked, set_blocked, set_unblocked]
@@ -133,7 +110,7 @@ app.post("/tasks/run-scheduler", requireTaskSecret, async (_req, res) => {
   res.json({ ok: true, ranAt: new Date().toISOString() });
 });
 
-// ---------- Debug opcional ----------
+// Debug opcional
 app.get("/debug/devices", async (_req, res) => {
   try {
     const r = await pool.query(
@@ -147,16 +124,13 @@ app.get("/debug/devices", async (_req, res) => {
 
 app.get("/debug/actions", async (_req, res) => {
   try {
-    const r = await pool.query(
-      "select * from actions order by created_at desc limit 50"
-    );
+    const r = await pool.query("select * from actions order by created_at desc limit 50");
     res.json({ ok: true, actions: r.rows });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e) });
   }
 });
 
-// ---------- 404 & errores ----------
 app.use((_req, res) => res.status(404).json({ ok: false, error: "Not found" }));
 
 app.use((err, _req, res, _next) => {
@@ -164,10 +138,7 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ ok: false, error: "Server error" });
 });
 
-// ---------- Boot ----------
 process.on("unhandledRejection", (e) => console.error("unhandledRejection", e));
 process.on("uncaughtException", (e) => console.error("uncaughtException", e));
 
-app.listen(PORT, "0.0.0.0", () =>
-  console.log("ApagaNet API ready on :" + PORT)
-);
+app.listen(PORT, "0.0.0.0", () => console.log("ApagaNet API ready on :" + PORT));

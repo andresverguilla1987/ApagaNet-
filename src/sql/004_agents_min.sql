@@ -1,6 +1,4 @@
--- 004_agents_min.sql
--- Idempotent: crea tablas mínimas si no existen
-
+-- 004_agents_min.sql (idempotente)
 create table if not exists homes (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null,
