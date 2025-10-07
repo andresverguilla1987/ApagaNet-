@@ -12,22 +12,19 @@ import { pool } from "./src/lib/db.js";
 import auth from "./src/routes/auth.js";
 import devices from "./src/routes/devices.js";
 import schedules from "./src/routes/schedules.js";
-import agents from "./src/routes/agents.js";   // <-- ya lo tienes del patch
-import admin from "./src/routes/admin.js";     // <-- NUEVO (del admin-patch)
+import agents from "./src/routes/agents.js";
+import admin from "./src/routes/admin.js";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 10000;
 
 // CORS_ORIGINS puede separarse por comas o espacios
 const ORIGINS = (process.env.CORS_ORIGINS || "")
-  .split(/[,\s]+/)
+  .split(/[\s,]+/)
   .map(s => s.trim())
   .filter(Boolean);
 
-// Detrás de proxy (Render) para rate-limit y logs correctos
 app.set("trust proxy", 1);
-
-// Middlewares base
 app.use(helmet());
 app.use(cors(ORIGINS.length ? { origin: ORIGINS } : {}));
 app.use(express.json());
@@ -92,6 +89,9 @@ export function requireTaskSecret(req, res, next) {
   next();
 }
 
+// ---------- Static admin UI ----------
+app.use("/admin/ui", express.static("src/admin-ui"));
+
 // ---------- Rutas ----------
 app.use("/auth", auth);
 app.use("/devices", requireJWT, devices);
@@ -109,8 +109,7 @@ app.use(
   agents
 );
 
-// /admin (crear homes/agents) protegido por TASK_SECRET
-// Endpoints: POST /admin/homes, POST /admin/agents, GET /admin/homes, GET /admin/agents
+// /admin protegido por TASK_SECRET (crear homes/agents)
 app.use("/admin", requireTaskSecret, admin);
 
 // Cron protegido por TASK_SECRET
@@ -152,7 +151,6 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ ok: false, error: "Server error" });
 });
 
-// ---------- Boot ----------
 process.on("unhandledRejection", (e) => console.error("unhandledRejection", e));
 process.on("uncaughtException", (e) => console.error("uncaughtException", e));
 

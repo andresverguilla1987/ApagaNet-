@@ -1,31 +1,45 @@
-// scripts/migrate.js — applies all SQL files in src/migrations
+/**
+ * scripts/migrate.js
+ * Ejecuta todos los .sql en src/sql/ en orden (por nombre).
+ * Uso:
+ *   DATABASE_URL=postgresql://user:pass@host/db node scripts/migrate.js
+ */
 import fs from "fs";
 import path from "path";
-import url from "url";
+import { fileURLToPath } from "url";
 import pg from "pg";
 
-const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
-const MIGRATIONS_DIR = path.join(__dirname, "..", "src", "migrations");
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-const { Pool } = pg;
-const cn = process.env.DATABASE_URL;
-if (!cn) { console.error("❌ Missing DATABASE_URL"); process.exit(1); }
+const dir = path.resolve(__dirname, "..", "src", "sql");
+const files = fs.readdirSync(dir)
+  .filter(f => f.endsWith(".sql"))
+  .sort();
 
-const pool = new Pool({
-  connectionString: cn,
-  ssl: cn.includes("render.com") ? { rejectUnauthorized: false } : undefined
-});
-
-async function run() {
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f=>f.endsWith(".sql")).sort();
-  console.log("🔧 Applying migrations:", files);
-  for (const f of files) {
-    const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, f), "utf8");
-    console.log("➡️  Running", f);
-    await pool.query(sql);
-  }
-  await pool.end();
-  console.log("✅ Done");
+const url = process.env.DATABASE_URL;
+if (!url) {
+  console.error("DATABASE_URL no definido");
+  process.exit(1);
 }
 
-run().catch(e=>{ console.error("💥 Migration error:", e); process.exit(1); });
+const pool = new pg.Pool({ connectionString: url });
+
+(async () => {
+  const client = await pool.connect();
+  try {
+    for (const f of files) {
+      const p = path.join(dir, f);
+      const sql = fs.readFileSync(p, "utf8");
+      console.log("==> Ejecutando", f);
+      await client.query(sql);
+    }
+    console.log("Migraciones completadas.");
+  } catch (e) {
+    console.error("Error en migraciones:", e);
+    process.exit(1);
+  } finally {
+    client.release();
+    await pool.end();
+  }
+})();
