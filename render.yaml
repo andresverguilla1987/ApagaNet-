@@ -1,9 +1,15 @@
 services:
   - type: web
-    name: apaganet-backend
+    name: ApagaNet-
     env: node
-    branch: main
-    buildCommand: "npm install"
-    startCommand: "node server.js"
-    rootDir: "."
-    plan: free
+    plan: starter
+    region: oregon
+    buildCommand: 'npm install'
+    startCommand: 'node server.js'
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: APP_NAME
+        value: ApagaNet
+      - key: APP_ENV
+        value: prod
