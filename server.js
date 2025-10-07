@@ -1,4 +1,4 @@
-// server.js — ApagaNet backend (con /agents)
+// server.js — ApagaNet backend (agents + admin)
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -12,18 +12,22 @@ import { pool } from "./src/lib/db.js";
 import auth from "./src/routes/auth.js";
 import devices from "./src/routes/devices.js";
 import schedules from "./src/routes/schedules.js";
-import agents from "./src/routes/agents.js";
+import agents from "./src/routes/agents.js";   // <-- ya lo tienes del patch
+import admin from "./src/routes/admin.js";     // <-- NUEVO (del admin-patch)
 
 const app = express();
 const PORT = Number(process.env.PORT) || 10000;
 
 // CORS_ORIGINS puede separarse por comas o espacios
 const ORIGINS = (process.env.CORS_ORIGINS || "")
-  .split(/[\s,]+/)
+  .split(/[,\s]+/)
   .map(s => s.trim())
   .filter(Boolean);
 
+// Detrás de proxy (Render) para rate-limit y logs correctos
 app.set("trust proxy", 1);
+
+// Middlewares base
 app.use(helmet());
 app.use(cors(ORIGINS.length ? { origin: ORIGINS } : {}));
 app.use(express.json());
@@ -40,7 +44,7 @@ app.get("/ping", async (_req, res) => {
       ok: true,
       db: r.rows[0]?.ok === 1,
       app: process.env.APP_NAME || "ApagaNet",
-      version: "0.4.0-agents",
+      version: "0.5.0-agents-admin",
       env: process.env.APP_ENV || "prod",
     });
   } catch (e) {
@@ -56,7 +60,7 @@ export function requireJWT(req, res, next) {
   try {
     req.user = jwt.verify(token, process.env.JWT_SECRET || "dev-secret");
     next();
-  } catch (_e) {
+  } catch {
     return res.status(401).json({ ok: false, error: "Invalid token" });
   }
 }
@@ -94,14 +98,24 @@ app.use("/devices", requireJWT, devices);
 app.use("/schedules", requireJWT, schedules);
 
 // /agents protegido por token de agente
-app.use("/agents", requireAgent, (req, _res, next) => {
-  if (!req.query.homeId && req.homeId) req.query.homeId = req.homeId;
-  if (req.body && !req.body.homeId && req.homeId) req.body.homeId = req.homeId;
-  next();
-}, agents);
+app.use(
+  "/agents",
+  requireAgent,
+  (req, _res, next) => {
+    if (!req.query.homeId && req.homeId) req.query.homeId = req.homeId;
+    if (req.body && !req.body.homeId && req.homeId) req.body.homeId = req.homeId;
+    next();
+  },
+  agents
+);
+
+// /admin (crear homes/agents) protegido por TASK_SECRET
+// Endpoints: POST /admin/homes, POST /admin/agents, GET /admin/homes, GET /admin/agents
+app.use("/admin", requireTaskSecret, admin);
 
 // Cron protegido por TASK_SECRET
 app.post("/tasks/run-scheduler", requireTaskSecret, async (_req, res) => {
+  // Demo: registra ejecución; inserta tu lógica real del scheduler aquí
   const checked = 0, set_blocked = 0, set_unblocked = 0;
   await pool.query(
     "insert into schedule_runs(ran_at,checked,set_blocked,set_unblocked) values (now(),$1,$2,$3)",
@@ -131,13 +145,14 @@ app.get("/debug/actions", async (_req, res) => {
   }
 });
 
+// ---------- 404 & errores ----------
 app.use((_req, res) => res.status(404).json({ ok: false, error: "Not found" }));
-
 app.use((err, _req, res, _next) => {
   console.error("Unhandled error", err);
   res.status(500).json({ ok: false, error: "Server error" });
 });
 
+// ---------- Boot ----------
 process.on("unhandledRejection", (e) => console.error("unhandledRejection", e));
 process.on("uncaughtException", (e) => console.error("uncaughtException", e));
 
