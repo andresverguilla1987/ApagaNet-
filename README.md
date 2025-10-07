@@ -1,72 +1,29 @@
+# ApagaNet Agent
 
-# ApagaNet Agent (OpenWrt ready)
+Cliente ligero que se conecta al backend de ApagaNet y ejecuta acciones de control según lo que indique el servidor.
 
-Agente minimal para conectar tu red doméstica con la API de **ApagaNet**.
-- Heartbeat a `/ping` del backend
-- Hooks para **bloquear/desbloquear por MAC** en routers **OpenWrt** vía SSH
-- Configuración por `.env`
-- Servicio **systemd** opcional
-
----
-
-## Estructura
-```
-.
-├─ agent.js
-├─ package.json
-├─ .env.example
-├─ scripts/
-│  ├─ openwrt_block.sh
-│  └─ openwrt_unblock.sh
-└─ systemd/
-   └─ apaganet-agent.service
-```
-
-## Requisitos
-- Node.js **18+**
-- Acceso SSH al router (OpenWrt), usuario `root` o con permisos equivalentes
-
-## Configuración
-Copia `.env.example` a `.env` y ajusta:
-```
+## Variables de entorno
+Copia `.env.example` a `.env` y completa:
+```ini
 API_URL=https://apaganet-zmsa.onrender.com
-AGENT_TOKEN=<token de la tabla agents.api_token>
-HOME_ID=<uuid del home>
-ROUTER_TYPE=openwrt     # openwrt | mock
-ROUTER_HOST=192.168.1.1
-ROUTER_USER=root
-DRY_RUN=true            # true = no aplica; false = aplica reglas firewall
-INTERVAL_MS=30000       # heartbeat cada 30s
+AGENT_TOKEN=<<tu agents.api_token>>
+HOME_ID=<<tu homes.id>>
+MODE=daemon
+INTERVAL_MS=60000
+CRON_EXPR=* * * * *
 ```
 
-## Uso
+## Ejecutar local
 ```bash
 npm install
 npm start
 ```
-Verás logs de heartbeat. Para aplicar reglas en el router cambia `DRY_RUN=false`.
 
-## Pruebas manuales de bloqueo
-```bash
-DRY_RUN=true  scripts/openwrt_block.sh   root 192.168.1.1 AA:BB:CC:DD:EE:FF
-DRY_RUN=true  scripts/openwrt_unblock.sh root 192.168.1.1 AA:BB:CC:DD:EE:FF
-# Para aplicar realmente:
-DRY_RUN=false scripts/openwrt_block.sh   root 192.168.1.1 AA:BB:CC:DD:EE:FF
-```
+## Render (Background Worker)
+- Tipo: **Worker**
+- Start command: `npm start`
+- Variables de entorno: las mismas del `.env`.
 
-## Como servicio (systemd)
-1. Edita `systemd/apaganet-agent.service` y cambia `WorkingDirectory` a la ruta del repo.
-2. Instala:
-```bash
-sudo cp systemd/apaganet-agent.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now apaganet-agent
-```
-Logs: `journalctl -u apaganet-agent -f`
-
-## Seguridad
-- **No subas tu `.env`** ni tokens a GitHub.
-- Usa un usuario SSH con clave y, si es posible, restringe a subred LAN.
-
-## Licencia
-MIT
+## Notas
+- Si tu backend aún no expone `/agents/next-actions` o `/agents/report`, el agente seguirá vivo y mostrará advertencias (no-op).
+- Reemplaza `executeAction()` con integración real (OpenWrt / UniFi / API del router).
