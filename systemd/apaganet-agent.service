@@ -1,0 +1,16 @@
+
+[Unit]
+Description=ApagaNet Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/apaganet-agent   # cambia a la ruta real del repo
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node agent.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
