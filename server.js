@@ -1,3 +1,4 @@
+// server.js — ApagaNet backend
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -11,73 +12,162 @@ import { pool } from "./src/lib/db.js";
 import auth from "./src/routes/auth.js";
 import devices from "./src/routes/devices.js";
 import schedules from "./src/routes/schedules.js";
+// NUEVO: endpoints de agente (si aplicaste el patch que te pasé)
+import agents from "./src/routes/agents.js";
 
 const app = express();
-const PORT = Number(process.env.PORT)||10000;
-const ORIGINS=(process.env.CORS_ORIGINS||"").split(",").filter(Boolean);
+const PORT = Number(process.env.PORT) || 10000;
 
+// Parseo fino de CORS_ORIGINS (coma o espacios)
+const ORIGINS = (process.env.CORS_ORIGINS || "")
+  .split(/[,\s]+/)
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+// Recomendado en Render/Heroku para logs/ratelimit detrás de proxy
+app.set("trust proxy", 1);
+
+// Middlewares base
 app.use(helmet());
-app.use(cors(ORIGINS.length?{origin:ORIGINS}:{ }));
+app.use(cors(ORIGINS.length ? { origin: ORIGINS } : {}));
 app.use(express.json());
 app.use(compression());
 app.use(morgan("dev"));
-app.use(rateLimit({ windowMs:60_000, max:200 }));
+app.use(rateLimit({ windowMs: 60_000, max: 200 }));
 
-app.get("/", (_req,res)=>res.send("ApagaNet API OK"));
-app.get("/ping", async (_req,res)=>{
+// ---------- Health ----------
+app.get("/", (_req, res) => res.send("ApagaNet API OK"));
+app.get("/ping", async (_req, res) => {
   try {
     const r = await pool.query("select 1 as ok");
-    res.json({ ok:true, db:r.rows[0].ok===1, version:"0.3.0-ready" });
-  } catch(e){ res.status(500).json({ ok:false, error:String(e) });}
+    res.json({
+      ok: true,
+      db: r.rows[0]?.ok === 1,
+      app: process.env.APP_NAME || "ApagaNet",
+      version: "0.4.0-agents",
+      env: process.env.APP_ENV || "prod",
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e) });
+  }
 });
 
-// Auth middleware (simple)
-export function requireAuth(req,res,next){
-  const h=req.headers.authorization||"";
-  const token=h.startsWith("Bearer ")?h.slice(7):null;
-  if(!token) return res.status(401).json({ok:false,error:"No token"});
-  try{
-    req.user=jwt.verify(token, process.env.JWT_SECRET||"dev-secret");
+// ---------- Auth middleware ----------
+/**
+ * Para endpoints de la app (panel): requiere JWT (usuarios)
+ * Header: Authorization: Bearer <JWT>
+ */
+export function requireJWT(req, res, next) {
+  const h = req.headers.authorization || "";
+  const token = h.startsWith("Bearer ") ? h.slice(7) : null;
+  if (!token) return res.status(401).json({ ok: false, error: "No token" });
+  try {
+    req.user = jwt.verify(token, process.env.JWT_SECRET || "dev-secret");
     next();
-  }catch(e){ return res.status(401).json({ok:false,error:"Invalid token"});}
+  } catch (_e) {
+    return res.status(401).json({ ok: false, error: "Invalid token" });
+  }
 }
 
-// Routes
+/**
+ * Para endpoints del agente (router/daemon): requiere AGENT_TOKEN
+ * Header: Authorization: Bearer <AGENT_TOKEN>
+ * Valida contra la tabla agents.api_token y adjunta req.agent / req.homeId
+ */
+export async function requireAgent(req, res, next) {
+  const h = req.headers.authorization || "";
+  const token = h.startsWith("Bearer ") ? h.slice(7) : null;
+  if (!token) return res.status(401).json({ ok: false, error: "No agent token" });
+  try {
+    const q = await pool.query(
+      "select id, home_id from agents where api_token = $1 limit 1",
+      [token]
+    );
+    if (!q.rowCount) return res.status(401).json({ ok: false, error: "Invalid agent token" });
+    req.agent = { id: q.rows[0].id, home_id: q.rows[0].home_id };
+    req.homeId = req.agent.home_id;
+    next();
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: String(e) });
+  }
+}
+
+/**
+ * Para cron/tareas internas: requiere TASK_SECRET exacto
+ * Header: Authorization: Bearer <TASK_SECRET>
+ */
+export function requireTaskSecret(req, res, next) {
+  const h = req.headers.authorization || "";
+  const token = h.startsWith("Bearer ") ? h.slice(7) : null;
+  if (!token || token !== (process.env.TASK_SECRET || "")) {
+    return res.sendStatus(401);
+  }
+  next();
+}
+
+// ---------- Rutas ----------
 app.use("/auth", auth);
-app.use("/devices", requireAuth, devices);
-app.use("/schedules", requireAuth, schedules);
+app.use("/devices", requireJWT, devices);
+app.use("/schedules", requireJWT, schedules);
 
-// Manual scheduler trigger (POST + Bearer TASK_SECRET)
-app.post("/tasks/run-scheduler", async (req,res)=>{
-  const h=req.headers.authorization||"";
-  const token=h.startsWith("Bearer ")?h.slice(7):null;
-  if(!token || token!==process.env.TASK_SECRET) return res.sendStatus(401);
+// Rutas del agente (protegidas con requireAgent)
+// - GET /agents/next-actions?homeId=...  (homeId opcional: si no lo mandas, usa req.homeId)
+// - POST /agents/report                   (body: { homeId, results: [...] })
+app.use("/agents", requireAgent, (req, _res, next) => {
+  // Si el agente no mandó homeId, inyectamos el suyo a query/body para el router
+  if (!req.query.homeId && req.homeId) req.query.homeId = req.homeId;
+  if (req.body && !req.body.homeId && req.homeId) req.body.homeId = req.homeId;
+  next();
+}, agents);
 
-  // Very simple demo: just record a run (actual logic should compute block/unblock)
-  const checked = 0, set_blocked=0, set_unblocked=0;
+// ---------- Tarea programada (cron) ----------
+app.post("/tasks/run-scheduler", requireTaskSecret, async (_req, res) => {
+  // Demo: registra ejecución; aquí pondrás la lógica real que evalúa schedules
+  const checked = 0,
+    set_blocked = 0,
+    set_unblocked = 0;
   await pool.query(
     "insert into schedule_runs(ran_at,checked,set_blocked,set_unblocked) values (now(),$1,$2,$3)",
-    [checked,set_blocked,set_unblocked]
+    [checked, set_blocked, set_unblocked]
   );
-  res.json({ ok:true, ranAt:new Date().toISOString() });
+  res.json({ ok: true, ranAt: new Date().toISOString() });
 });
 
-// Optional debug endpoints
-app.get("/debug/devices", async (_req,res)=>{
-  try{
-    const r=await pool.query("select id,name,mac,blocked,updated_at from devices order by updated_at desc limit 50");
-    res.json({ ok:true, devices:r.rows });
-  }catch(e){ res.status(500).json({ ok:false, error:String(e) });}
+// ---------- Debug opcional ----------
+app.get("/debug/devices", async (_req, res) => {
+  try {
+    const r = await pool.query(
+      "select id,name,mac,blocked,updated_at from devices order by updated_at desc limit 50"
+    );
+    res.json({ ok: true, devices: r.rows });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e) });
+  }
 });
 
-app.get("/debug/actions", async (_req,res)=>{
-  try{
-    const r=await pool.query("select * from actions order by created_at desc limit 50");
-    res.json({ ok:true, actions:r.rows });
-  }catch(e){ res.status(500).json({ ok:false, error:String(e) });}
+app.get("/debug/actions", async (_req, res) => {
+  try {
+    const r = await pool.query(
+      "select * from actions order by created_at desc limit 50"
+    );
+    res.json({ ok: true, actions: r.rows });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e) });
+  }
 });
 
-process.on("unhandledRejection", e=>console.error("unhandledRejection",e));
-process.on("uncaughtException", e=>console.error("uncaughtException",e));
+// ---------- 404 & errores ----------
+app.use((_req, res) => res.status(404).json({ ok: false, error: "Not found" }));
 
-app.listen(PORT,"0.0.0.0",()=>console.log("ApagaNet API ready on :"+PORT));
+app.use((err, _req, res, _next) => {
+  console.error("Unhandled error", err);
+  res.status(500).json({ ok: false, error: "Server error" });
+});
+
+// ---------- Boot ----------
+process.on("unhandledRejection", (e) => console.error("unhandledRejection", e));
+process.on("uncaughtException", (e) => console.error("uncaughtException", e));
+
+app.listen(PORT, "0.0.0.0", () =>
+  console.log("ApagaNet API ready on :" + PORT)
+);
