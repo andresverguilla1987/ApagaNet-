@@ -1,19 +1,19 @@
-cat > src/routes/agents.js <<'EOF'
-/*
- src/routes/agents.js  (DB-backed)
- Persistencia en Postgres: agent_modem_reports, agent_device_reports
-*/
+// src/routes/agents.js  (DB-backed con fallback en memoria)
 import express from "express";
 import { pool } from "../lib/db.js";
 const router = express.Router();
 
-// parse JSON
-router.use(express.json());
+// parse JSON (limite razonable)
+router.use(express.json({ limit: "1mb" }));
+
+// fallback in-memory stores (se usan si la DB falla)
+const modemReportsFallback = new Map();   // agent_id -> report
+const deviceReportsFallback = new Map();  // agent_id -> report
 
 // require AGENT_TOKEN if set
 function requireAgentToken(req, res, next) {
   const expected = process.env.AGENT_TOKEN || "";
-  if (!expected) return next();
+  if (!expected) return next(); // dev mode: no token configured -> allow
   const h = req.headers.authorization || "";
   const token = h.startsWith("Bearer ") ? h.slice(7) : null;
   if (!token || token !== expected) {
@@ -22,81 +22,129 @@ function requireAgentToken(req, res, next) {
   return next();
 }
 
-// helper: read agent id
+// helper: read agent id (compatibility: fallback to "1" if not provided)
 function readAgentId(req) {
-  return String(req.query.agent_id || req.query.agent || req.body?.agent_id || req.body?.agent || "");
+  return String(req.query.agent_id || req.query.agent || req.body?.agent_id || req.body?.agent || "1");
 }
 
-// GET latest modem-compat
+// health / debug info
+router.get("/_debug", (_req, res) => {
+  res.json({
+    ok: true,
+    fallback: {
+      modemReports: modemReportsFallback.size,
+      deviceReports: deviceReportsFallback.size,
+    },
+    env: {
+      hasAgentToken: !!process.env.AGENT_TOKEN,
+    },
+  });
+});
+
+// ---------- GET latest modem compatibility report ----------
 router.get("/modem-compat/latest", async (req, res) => {
+  const agentId = readAgentId(req);
+  if (!agentId) return res.status(400).json({ ok: false, error: "agent_id required" });
+
+  // try DB first
   try {
-    const agentId = readAgentId(req);
-    if (!agentId) return res.status(400).json({ ok: false, error: "agent_id required" });
     const q = `SELECT id, agent_id, gateway, http, decision, created_at
-               FROM agent_modem_reports WHERE agent_id=$1 ORDER BY created_at DESC LIMIT 1`;
+               FROM agent_modem_reports WHERE agent_id=$1
+               ORDER BY created_at DESC LIMIT 1`;
     const r = await pool.query(q, [agentId]);
-    if (!r.rows[0]) return res.status(404).json({ ok: false, error: "No encontrado" });
-    return res.json({ ok: true, report: r.rows[0] });
+    if (!r.rows[0]) {
+      // if DB returns nothing, fallback to in-memory if available
+      const fb = modemReportsFallback.get(agentId);
+      if (fb) return res.json({ ok: true, report: fb, fallback: true });
+      return res.status(404).json({ ok: false, error: "No encontrado" });
+    }
+    return res.json({ ok: true, report: r.rows[0], fallback: false });
   } catch (e) {
-    console.error("modem-compat/latest error:", e);
-    return res.status(500).json({ ok: false, error: "Server error" });
+    console.error("[agents] modem-compat/latest DB error:", e?.message ?? e);
+    // DB error -> try fallback
+    const fb = modemReportsFallback.get(agentId);
+    if (fb) return res.json({ ok: true, report: fb, fallback: true });
+    return res.status(500).json({ ok: false, error: "Server error (DB)", detail: String(e?.message ?? e) });
   }
 });
 
-// GET latest devices report
+// ---------- GET latest devices report ----------
 router.get("/devices/latest", async (req, res) => {
+  const agentId = readAgentId(req);
+  if (!agentId) return res.status(400).json({ ok: false, error: "agent_id required" });
+
   try {
-    const agentId = readAgentId(req);
-    if (!agentId) return res.status(400).json({ ok: false, error: "agent_id required" });
     const q = `SELECT id, agent_id, devices, created_at
-               FROM agent_device_reports WHERE agent_id=$1 ORDER BY created_at DESC LIMIT 1`;
+               FROM agent_device_reports WHERE agent_id=$1
+               ORDER BY created_at DESC LIMIT 1`;
     const r = await pool.query(q, [agentId]);
-    if (!r.rows[0]) return res.status(404).json({ ok: false, error: "No encontrado" });
-    return res.json({ ok: true, report: r.rows[0] });
+    if (!r.rows[0]) {
+      const fb = deviceReportsFallback.get(agentId);
+      if (fb) return res.json({ ok: true, report: fb, fallback: true });
+      return res.status(404).json({ ok: false, error: "No encontrado" });
+    }
+    return res.json({ ok: true, report: r.rows[0], fallback: false });
   } catch (e) {
-    console.error("devices/latest error:", e);
-    return res.status(500).json({ ok: false, error: "Server error" });
+    console.error("[agents] devices/latest DB error:", e?.message ?? e);
+    const fb = deviceReportsFallback.get(agentId);
+    if (fb) return res.json({ ok: true, report: fb, fallback: true });
+    return res.status(500).json({ ok: false, error: "Server error (DB)", detail: String(e?.message ?? e) });
   }
 });
 
-// POST report-modem-compat
+// ---------- POST report-modem-compat ----------
 router.post("/report-modem-compat", requireAgentToken, async (req, res) => {
+  const body = req.body || {};
+  const agentId = String(body.agent_id || "1");
+  if (!agentId) return res.status(400).json({ ok: false, error: "agent_id required" });
+
+  const now = new Date().toISOString();
+  const storedFallback = {
+    agent_id: agentId,
+    gateway: body.gateway || null,
+    http: Array.isArray(body.http) ? body.http : [],
+    decision: body.decision || {},
+    created_at: now,
+  };
+
+  // try DB insert
   try {
-    const body = req.body || {};
-    const agentId = String(body.agent_id || "");
-    if (!agentId) return res.status(400).json({ ok: false, error: "agent_id required" });
     const q = `INSERT INTO agent_modem_reports(agent_id, gateway, http, decision)
                VALUES ($1,$2,$3::jsonb,$4::jsonb) RETURNING id, created_at`;
     const vals = [agentId, body.gateway || null, JSON.stringify(body.http || []), JSON.stringify(body.decision || {})];
     const r = await pool.query(q, vals);
-    return res.json({ ok: true, id: r.rows[0].id, created_at: r.rows[0].created_at });
+    return res.json({ ok: true, id: r.rows[0].id, created_at: r.rows[0].created_at, fallback: false });
   } catch (e) {
-    console.error("report-modem-compat error:", e);
-    return res.status(500).json({ ok: false, error: "Server error" });
+    console.error("[agents] report-modem-compat DB insert failed, using fallback:", e?.message ?? e);
+    // store in memory so frontend/agent can still read it until DB is back
+    modemReportsFallback.set(agentId, storedFallback);
+    return res.json({ ok: true, stored: storedFallback, fallback: true, error: String(e?.message ?? e) });
   }
 });
 
-// POST report-devices
+// ---------- POST report-devices ----------
 router.post("/report-devices", requireAgentToken, async (req, res) => {
+  const body = req.body || {};
+  const agentId = String(body.agent_id || "1");
+  if (!agentId) return res.status(400).json({ ok: false, error: "agent_id required" });
+
+  const storedFallback = {
+    agent_id: agentId,
+    devices: Array.isArray(body.devices) ? body.devices : [],
+    created_at: new Date().toISOString(),
+  };
+
   try {
-    const body = req.body || {};
-    const agentId = String(body.agent_id || "");
-    if (!agentId) return res.status(400).json({ ok: false, error: "agent_id required" });
     const q = `INSERT INTO agent_device_reports(agent_id, devices)
                VALUES ($1,$2::jsonb) RETURNING id, created_at`;
     const vals = [agentId, JSON.stringify(body.devices || [])];
     const r = await pool.query(q, vals);
-    return res.json({ ok: true, id: r.rows[0].id, created_at: r.rows[0].created_at });
+    return res.json({ ok: true, id: r.rows[0].id, created_at: r.rows[0].created_at, fallback: false });
   } catch (e) {
-    console.error("report-devices error:", e);
-    return res.status(500).json({ ok: false, error: "Server error" });
+    console.error("[agents] report-devices DB insert failed, using fallback:", e?.message ?? e);
+    deviceReportsFallback.set(agentId, storedFallback);
+    return res.json({ ok: true, stored: storedFallback, fallback: true, error: String(e?.message ?? e) });
   }
 });
 
 export default router;
-EOF
-
-# git add/commit/push (ajusta branch si usas otro)
-git add src/routes/agents.js
-git commit -m "feat: agents DB-backed (persist reports in Postgres)" || true
-git push origin HEAD || echo "git push falló: revisa credenciales/remote"
