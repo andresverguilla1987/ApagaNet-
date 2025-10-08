@@ -1,34 +1,27 @@
-ApagaNet helper ZIP - quick tokens & test reports
-================================================
+ApagaNet Diagnostic Package
+===========================
 
-Files included:
-- make_agent_token.sh   -> generate an agent JWT (requires node & jsonwebtoken)
-- make_admin_token.sh   -> generate an admin JWT for testing (requires node & jsonwebtoken)
-- post_reports.sh       -> posts modem + devices reports to APAGANET_URL using AGENT_TOKEN
-- check_endpoints.sh    -> GET checks for the new endpoints using ADMIN_JWT
-- insert_sql.sh         -> insert test rows directly into Postgres (uses psql)
-- README.txt            -> this file
+Files:
+- diag.sh         -> main diagnostic script (bash)
+- make_tokens.sh  -> generate AGENT_TOKEN and ADMIN_JWT using JWT_SECRET (requires node)
+- README.txt      -> this file with instructions
 
-Quick usage (minimal):
-1) Unzip and cd into the folder.
-2) Generate an agent token (requires setting JWT_SECRET env var):
-   JWT_SECRET="dev-secret" ./make_agent_token.sh 1
-   -> copy printed token into AGENT_TOKEN
-3) Export APAGANET_URL (example):
+How to run (recommended: Render Web Shell or local terminal):
+1) Upload/extract package on the machine where you will run diagnostics (Render web shell or your laptop).
+2) Make scripts executable:
+   chmod +x diag.sh make_tokens.sh
+3) Recommended env vars to set before running:
+   export NETLIFY_URL="https://<tu-netlify-site>.netlify.app"
    export APAGANET_URL="https://apaganet-zmsa.onrender.com"
-4) Export AGENT_TOKEN from step 2:
-   export AGENT_TOKEN="eyJ..."
-5) Post test reports:
-   ./post_reports.sh
-6) Generate an admin token (for GET checks):
-   JWT_SECRET="dev-secret" ./make_admin_token.sh
-   export ADMIN_JWT="<token>"
-7) Check GET endpoints:
-   export APAGANET_URL="https://apaganet-zmsa.onrender.com"
-   export ADMIN_JWT="<token>"
-   ./check_endpoints.sh
+   export AGENT_TOKEN="<token-from-render-or-generated>"   # optional, used to POST reports
+   export ADMIN_JWT="<admin-jwt>"                          # optional, used for admin GETs
+   export PGCONN="host=... user=... password=... dbname=..." # optional
+   export JWT_SECRET="apaganet-secret-dev"                # optional (for make_tokens.sh)
+4) Run diagnostics:
+   ./diag.sh | tee diag_output.txt
+5) Inspect diag_output.txt and paste any failing sections (404, 401, SQL errors) back to the team/assistant.
 
 Notes:
-- These scripts assume your backend validates JWT signed with the same JWT_SECRET you set when generating tokens.
-- If your backend uses a different auth flow, instead use insert_sql.sh to insert test rows directly into the DB.
-- Keep secrets safe; do not commit JWT_SECRET into source control.
+- diag.sh will try to POST test reports if AGENT_TOKEN is provided.
+- If you don't have AGENT_TOKEN but know JWT_SECRET, run: JWT_SECRET=... ./make_tokens.sh to generate tokens.
+- Do not commit secrets into git. Use ephemeral tokens for diagnostics.
