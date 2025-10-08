@@ -95,3 +95,8 @@ router.post("/report-devices", requireAgentToken, async (req, res) => {
 
 export default router;
 EOF
+
+# git add/commit/push (ajusta branch si usas otro)
+git add src/routes/agents.js
+git commit -m "feat: agents DB-backed (persist reports in Postgres)" || true
+git push origin HEAD || echo "git push falló: revisa credenciales/remote"
