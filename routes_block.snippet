@@ -1,0 +1,41 @@
+// --- BEGIN INSERTED ROUTES (autopatch) ---
+// These routes return the latest modem and device reports for a given agent_id.
+// They expect `pool` and `requireJWT` to be defined in server.js as in your project.
+app.get("/agents/modem-compat/latest", requireJWT, async (req, res) => {
+  try {
+    const agentId = String(req.query.agent_id || "");
+    if (!agentId) return res.status(400).json({ ok: false, error: "agent_id requerido" });
+
+    const q = `SELECT id, agent_id, gateway, http, decision, created_at
+               FROM agent_modem_reports
+               WHERE agent_id = $1
+               ORDER BY created_at DESC
+               LIMIT 1`;
+    const r = await pool.query(q, [agentId]);
+    if (!r.rows.length) return res.status(404).json({ ok: false, error: "No encontrado" });
+    return res.json({ ok: true, report: r.rows[0] });
+  } catch (e) {
+    console.error("GET /agents/modem-compat/latest error:", e);
+    return res.status(500).json({ ok: false, error: String(e) });
+  }
+});
+
+app.get("/agents/devices/latest", requireJWT, async (req, res) => {
+  try {
+    const agentId = String(req.query.agent_id || "");
+    if (!agentId) return res.status(400).json({ ok: false, error: "agent_id requerido" });
+
+    const q = `SELECT id, agent_id, devices, created_at
+               FROM agent_device_reports
+               WHERE agent_id = $1
+               ORDER BY created_at DESC
+               LIMIT 1`;
+    const r = await pool.query(q, [agentId]);
+    if (!r.rows.length) return res.status(404).json({ ok: false, error: "No encontrado" });
+    return res.json({ ok: true, report: r.rows[0] });
+  } catch (e) {
+    console.error("GET /agents/devices/latest error:", e);
+    return res.status(500).json({ ok: false, error: String(e) });
+  }
+});
+// --- END INSERTED ROUTES ---
