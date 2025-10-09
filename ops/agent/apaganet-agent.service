@@ -1,0 +1,11 @@
+[Unit]
+Description=ApagaNet agent (oneshot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/default/apaganet_agent
+ExecStart=/usr/local/bin/apaganet_agent.sh
+Nice=10
+TimeoutStartSec=120
