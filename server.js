@@ -24,7 +24,7 @@ const VERSION = process.env.VERSION || "0.6.0";
 // CORS
 const ORIGINS = [
   ...((process.env.CORS_ORIGINS || "")
-    .split(/[,\s]+/)
+    .split(/[\s,]+/)
     .map(s => s.trim())
     .filter(Boolean)),
   "http://localhost:3000",
@@ -124,6 +124,7 @@ app.get("/api/diag", async (_req, res) => {
 
 // =====================================================
 //  ENDPOINTS ABIERTOS PARA LA UI DE PRUEBAS (sin JWT)
+//  Mantienen compat con tu schema actual sin romper /devices (protegido)
 // =====================================================
 
 // 1) Compatibilidad de módem (usado por el botón "Detectar módem y equipos")
@@ -136,6 +137,7 @@ app.get("/agents/modem-compat", async (req, res) => {
     created_at: new Date().toISOString(),
   };
 
+  // Registrar opcionalmente el reporte
   try {
     await pool.query("insert into reports(id, agent_id, created_at) values ($1,$2, now())", [report.id, agent_id]);
   } catch (_) {}
@@ -144,9 +146,14 @@ app.get("/agents/modem-compat", async (req, res) => {
 });
 
 // 2) Últimos dispositivos detectados (fallback abierto para la UI)
+//    Si tu router /agents define esta ruta, su handler tomará el control al estar montado más abajo.
 app.get("/agents/devices/latest", async (req, res, next) => {
+  // Intentamos que el router propio maneje esta ruta si existe
   try { return next(); } catch {}
+
+  // Fallback simple si el router no responde:
   const agent_id = String(req.query.agent_id || "");
+  // Opcional: leer de alguna tabla si la tienes. Por ahora vacío.
   res.json({
     ok: true,
     report: { id: crypto.randomUUID(), agent_id, created_at: new Date().toISOString() },
@@ -164,6 +171,7 @@ app.post("/agents/devices/pause", async (req, res) => {
       [crypto.randomUUID(), String(agent_id || ""), String(device_id || ""), "pause", Number(minutes) || 15]
     );
   } catch (_) {}
+  // Aquí tu agente/router deberá aplicar el bloqueo real
   res.json({ ok: true, applied: "pause", agent_id, device_id, minutes });
 });
 
