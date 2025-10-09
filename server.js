@@ -15,6 +15,8 @@ import devices from "./src/routes/devices.js";
 import schedules from "./src/routes/schedules.js";
 import agents from "./src/routes/agents.js";
 import admin from "./src/routes/admin.js";
+// 👇 NUEVO: mock para pruebas de UI (equipos simulados)
+import mockRouter from "./src/routes/mockRouter.js";
 
 // --- App base ---
 const app = express();
@@ -192,7 +194,11 @@ app.post("/agents/devices/resume", async (req, res) => {
 app.use("/auth", auth);
 app.use("/devices", requireJWT, devices);      // protegidas por JWT
 app.use("/schedules", requireJWT, schedules);  // protegidas por JWT
+
+// 👇 Montamos el MOCK antes del router real de agents
+app.use("/agents", mockRouter);                // MOCK primero (para pruebas UI)
 app.use("/agents", agents);                    // router principal de agents
+
 app.use("/admin", requireTaskSecret, admin);
 
 // Tarea programada
