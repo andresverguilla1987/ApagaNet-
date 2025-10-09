@@ -1,11 +1,22 @@
-# server.js parcheado (ApagaNet)
+# ApagaNet Mock Router
 
-- Agrega endpoints abiertos para la UI de Netlify sin JWT:
-  - `GET /agents/modem-compat`
-  - `GET /agents/devices/latest` (fallback)
-  - `POST /agents/devices/pause`
-  - `POST /agents/devices/resume`
-- Mantiene tus routers existentes (`/auth`, `/devices` con JWT, `/schedules` con JWT, `/agents`, `/admin` con TASK_SECRET).
-- No rompe nada: si tu router `/agents` define `devices/latest`, prevalecerá.
+Este módulo agrega un endpoint para simular equipos conectados sin requerir `agent.sh`.
 
-Despliegue: reemplaza tu `server.js` en Render y redeploy.
+## Uso:
+1. Coloca `mockRouter.js` dentro de `/src/routes/`.
+2. En tu `server.js`, importa y monta el router **antes** del router real `/agents`:
+
+```js
+import mockRouter from "./src/routes/mockRouter.js";
+app.use("/agents", mockRouter); // <= monta mock
+```
+
+3. Redeploy en Render.
+
+## Endpoints disponibles:
+- `POST /agents/mock-add` → agrega dispositivos simulados
+- `GET /agents/devices/latest` → lista los simulados
+- `POST /agents/devices/pause` → pausa mock
+- `POST /agents/devices/resume` → reanuda mock
+
+Listo para pruebas con la UI de Netlify.
