@@ -1,0 +1,12 @@
+# Helper script - DO NOT RUN blindly. Inspect before executing.
+echo "Recommended steps (inspect variables before running):"
+echo "1) Ensure DATABASE_URL, AGENT_TOKEN are set in Render / environment"
+echo "2) Install dependencies: npm install"
+echo "3) Apply DB migration: psql "$DATABASE_URL" -f migration.sql"
+echo "4) Start server: npm start"
+echo ""
+echo "Example:"
+echo "  export DATABASE_URL=postgresql://user:pass@host:5432/dbname"
+echo "  npm install"
+echo "  npm run migrate"
+echo "  npm start"

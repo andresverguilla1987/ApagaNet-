@@ -1,4 +1,3 @@
-// server.js
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -15,34 +14,29 @@ import schedules from "./src/routes/schedules.js";
 import agents from "./src/routes/agents.js";
 import admin from "./src/routes/admin.js";
 
-// ---------- Config ----------
 const app = express();
 const PORT = Number(process.env.PORT) || 10000;
 const VERSION = process.env.VERSION || "0.6.0";
 
-// CORS allow-list (coma o espacios). Agrega defaults útiles:
 const ORIGINS = [
   ...((process.env.CORS_ORIGINS || "")
-    .split(/[\s,]+/)
+    .split(/[,\s]+/)
     .map(s => s.trim())
     .filter(Boolean)),
   "http://localhost:3000",
   "http://localhost:5173",
 ].filter(Boolean);
 
-// Seguridad/proxy y middlewares base
 app.set("trust proxy", 1);
 app.disable("x-powered-by");
 
-// Helmet: desactiva CORP para permitir assets desde orígenes permitidos si hace falta.
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" },
 }));
 
-// CORS con allow-list real + preflight consistente
 const corsOptions = {
   origin(origin, cb) {
-    if (!origin) return cb(null, true); // curl / Postman
+    if (!origin) return cb(null, true);
     if (ORIGINS.includes(origin)) return cb(null, true);
     return cb(new Error("CORS: Origin not allowed"));
   },
@@ -54,13 +48,11 @@ const corsOptions = {
 app.use((req, res, next) => { res.setHeader("Vary", "Origin"); next(); });
 app.use(cors(corsOptions));
 
-// JSON / compresión / logs / rate limit
 app.use(express.json({ limit: "1mb" }));
 app.use(compression());
 app.use(morgan("dev"));
 app.use(rateLimit({ windowMs: 60_000, max: 200, standardHeaders: true, legacyHeaders: false }));
 
-// ---------- Utilidades ----------
 function requireJWT(req, res, next) {
   const h = req.headers.authorization || "";
   const token = h.startsWith("Bearer ") ? h.slice(7) : null;
@@ -82,11 +74,10 @@ async function dbPing() {
   const t0 = performance.now?.() ?? Date.now();
   const r = await pool.query("select 1 as ok");
   const t1 = performance.now?.() ?? Date.now();
-  const latencyMs = Math.round((t1 - t0) * 1000) / 1000; // si performance.now en ms, queda igual
+  const latencyMs = Math.round((t1 - t0) * 1000) / 1000;
   return { ok: r.rows?.[0]?.ok === 1, latencyMs };
 }
 
-// ---------- Rutas públicas básicas ----------
 app.head("/", (_req, res) => res.status(200).end());
 app.get("/", (_req, res) => res.send("ApagaNet API OK"));
 
@@ -99,7 +90,6 @@ app.get("/ping", async (_req, res) => {
   }
 });
 
-// Health (para monitores / Render)
 app.get("/api/health", async (_req, res) => {
   try {
     const startedAt = process.uptime ? Date.now() - Math.round(process.uptime() * 1000) : null;
@@ -116,7 +106,6 @@ app.get("/api/health", async (_req, res) => {
   }
 });
 
-// Diagnóstico compacto (idéntico a lo que probaste)
 app.get("/api/diag", async (_req, res) => {
   try {
     const { ok: dbOk, latencyMs } = await dbPing();
@@ -126,33 +115,26 @@ app.get("/api/diag", async (_req, res) => {
   }
 });
 
-// ---------- Rutas de la app ----------
 app.use("/auth", auth);
 app.use("/devices", requireJWT, devices);
 app.use("/schedules", requireJWT, schedules);
-// si agents debe ser público, lo dejamos así; si no, pon requireJWT
 app.use("/agents", agents);
 app.use("/admin", requireTaskSecret, admin);
 
-// Tarea protegida por token (scheduler)
 app.post("/tasks/run-scheduler", requireTaskSecret, async (_req, res) => {
   await pool.query("insert into schedule_runs(ran_at,checked,set_blocked,set_unblocked) values (now(),0,0,0)");
   res.json({ ok: true, ranAt: new Date().toISOString() });
 });
 
-// ---------- 404 & errores ----------
 app.use((_req, res) => res.status(404).json({ ok: false, error: "No encontrado" }));
-// eslint-disable-next-line no-unused-vars
 app.use((err, _req, res, _next) => {
   console.error(err);
   res.status(500).json({ ok: false, error: "Server error" });
 });
 
-// ---------- Arranque ----------
 app.listen(PORT, "0.0.0.0", () => {
   console.log("ApagaNet API ready on :" + PORT);
 });
 
-// Opcional: captura errores no manejados para que no tumben el proceso
 process.on("unhandledRejection", (e) => console.error("unhandledRejection:", e));
 process.on("uncaughtException", (e) => console.error("uncaughtException:", e));

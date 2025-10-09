@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ApagaNet - Tester (Netlify)</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;max-width:920px;margin:28px auto;padding:16px;color:#111}
+    .card{border:1px solid #e6e6e6;border-radius:8px;padding:14px;margin:12px 0;background:#fff}
+    label{display:block;margin:6px 0;font-weight:600}
+    input[type="text"]{padding:8px;width:100%;box-sizing:border-box;border:1px solid #ddd;border-radius:6px}
+    button{padding:10px 14px;border-radius:6px;border:0;background:#0b74de;color:white;cursor:pointer}
+    pre#debug{height:180px;overflow:auto;background:#0f1724;color:#cbd5e1;padding:8px;border-radius:6px}
+    .ok{border-left:4px solid #28a745;padding-left:10px}
+  </style>
+</head>
+<body>
+  <h1>ApagaNet — Tester (Netlify)</h1>
+  <p class="muted">Página mínima para probar la integración Netlify → backend (proxy /api/*).</p>
+
+  <div class="card">
+    <label for="agentIdForScan">Agent ID (prueba)</label>
+    <input id="agentIdForScan" type="text" value="1" />
+    <div style="margin-top:10px;">
+      <button id="btnCheckCompatibility">Detectar módem y equipos</button>
+      <button id="btnPing" style="margin-left:8px;background:#333">Ping backend</button>
+    </div>
+  </div>
+
+  <div id="compatResult" class="card">Resultado aparecerá aquí</div>
+
+  <h3>Debug (últimos eventos)</h3>
+  <pre id="debug"></pre>
+
+  <script src="/compat_widget.js"></script>
+</body>
+</html>
