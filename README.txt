@@ -1,22 +1,31 @@
-# ApagaNet Mock Router
+# ApagaNet — agent.sh (real)
 
-Este módulo agrega un endpoint para simular equipos conectados sin requerir `agent.sh`.
+Script simple que descubre dispositivos en tu red local y los reporta a tu backend.
 
-## Uso:
-1. Coloca `mockRouter.js` dentro de `/src/routes/`.
-2. En tu `server.js`, importa y monta el router **antes** del router real `/agents`:
+## Requisitos
+- bash, curl, iproute2 (ip), net-tools (arp) — cualquiera de ip/arp sirve.
+- (Opcional) Variable `APAGANET_TOKEN` si tu backend requiere Bearer.
 
-```js
-import mockRouter from "./src/routes/mockRouter.js";
-app.use("/agents", mockRouter); // <= monta mock
+## Uso
+```bash
+chmod +x agent.sh
+./agent.sh <AGENT_ID> <BACKEND_URL>
+# Ejemplo:
+./agent.sh 1 https://apaganet-zmsa.onrender.com
 ```
 
-3. Redeploy en Render.
+Envía JSON a uno de estos endpoints (en orden, hasta que responda 200):
+- `/agents/devices/report`
+- `/agents/report`
+- `/api/agents/devices/report`
 
-## Endpoints disponibles:
-- `POST /agents/mock-add` → agrega dispositivos simulados
-- `GET /agents/devices/latest` → lista los simulados
-- `POST /agents/devices/pause` → pausa mock
-- `POST /agents/devices/resume` → reanuda mock
+Si tu backend usa un token, exporta:
+```bash
+export APAGANET_TOKEN="xxxxxxxx"
+```
 
-Listo para pruebas con la UI de Netlify.
+## Cómo verifica dispositivos
+- `ip neigh show` (preferente)
+- `arp -an` (fallback)
+
+Reporta pares `{ip, mac}`.
