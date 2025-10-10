@@ -15,7 +15,7 @@ import devices from "./src/routes/devices.js";
 import schedules from "./src/routes/schedules.js";
 import agents from "./src/routes/agents.js";
 import admin from "./src/routes/admin.js";
-// 👇 NUEVO: mock para pruebas de UI (equipos simulados)
+// MOCK para pruebas de UI (equipos simulados)
 import mockRouter from "./src/routes/mockRouter.js";
 
 // --- App base ---
@@ -148,14 +148,10 @@ app.get("/agents/modem-compat", async (req, res) => {
 });
 
 // 2) Últimos dispositivos detectados (fallback abierto para la UI)
-//    Si tu router /agents define esta ruta, su handler tomará el control al estar montado más abajo.
 app.get("/agents/devices/latest", async (req, res, next) => {
-  // Intentamos que el router propio maneje esta ruta si existe
   try { return next(); } catch {}
 
-  // Fallback simple si el router no responde:
   const agent_id = String(req.query.agent_id || "");
-  // Opcional: leer de alguna tabla si la tienes. Por ahora vacío.
   res.json({
     ok: true,
     report: { id: crypto.randomUUID(), agent_id, created_at: new Date().toISOString() },
@@ -173,7 +169,6 @@ app.post("/agents/devices/pause", async (req, res) => {
       [crypto.randomUUID(), String(agent_id || ""), String(device_id || ""), "pause", Number(minutes) || 15]
     );
   } catch (_) {}
-  // Aquí tu agente/router deberá aplicar el bloqueo real
   res.json({ ok: true, applied: "pause", agent_id, device_id, minutes });
 });
 
@@ -189,15 +184,44 @@ app.post("/agents/devices/resume", async (req, res) => {
 });
 
 // =====================================================
+//  NUEVO: Comandos para el agente (mock en memoria)
+//  - GET  /agents/commands?agent_id=1  -> devuelve array de comandos pendientes
+//  - POST /agents/commands             -> agrega comando en memoria
+//    body: { agent_id, type: "pause"|"resume", device_id, minutes? }
+// =====================================================
+const commandQueue = new Map(); // agent_id -> Array<cmd>
+
+app.get("/agents/commands", (req, res) => {
+  const agentId = String(req.query.agent_id || ""); // el agente siempre envía agent_id
+  const list = commandQueue.get(agentId) || [];
+  // Entregamos y vaciamos (estilo "pull once")
+  commandQueue.set(agentId, []);
+  // El agente espera un ARRAY crudo (no {ok:true}), así evitamos errores
+  return res.json(list);
+});
+
+app.post("/agents/commands", (req, res) => {
+  const { agent_id, type, device_id, minutes } = req.body || {};
+  if (!agent_id || !type) {
+    return res.status(400).json({ ok: false, error: "agent_id y type son requeridos" });
+  }
+  const cmd = { type, device_id, minutes: minutes ? Number(minutes) : undefined, created_at: new Date().toISOString() };
+  const list = commandQueue.get(String(agent_id)) || [];
+  list.push(cmd);
+  commandQueue.set(String(agent_id), list);
+  return res.json({ ok: true, queued: cmd, totalPending: list.length });
+});
+
+// =====================================================
 //  Rutas existentes (se mantienen)
 // =====================================================
 app.use("/auth", auth);
 app.use("/devices", requireJWT, devices);      // protegidas por JWT
 app.use("/schedules", requireJWT, schedules);  // protegidas por JWT
 
-// 👇 Montamos el MOCK antes del router real de agents
-app.use("/agents", mockRouter);                // MOCK primero (para pruebas UI)
-app.use("/agents", agents);                    // router principal de agents
+// MOCK antes del router real de agents (para que la UI funcione siempre)
+app.use("/agents", mockRouter);
+app.use("/agents", agents);
 
 app.use("/admin", requireTaskSecret, admin);
 
