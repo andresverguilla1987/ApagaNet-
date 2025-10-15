@@ -1,0 +1,32 @@
+name: Newman Smoke Tests
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  newman:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install newman
+        run: npm i -g newman newman-reporter-htmlextra
+
+      - name: Run smoke tests
+        run: |
+          mkdir -p reports
+          newman run ApagaNet.smoketests.postman_collection.json             -e ApagaNet.postman_environment.json             --timeout-request 15000             --delay-request 200             --reporters cli,htmlextra             --reporter-htmlextra-export reports/apaganet-smoke.html
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: apaganet-smoke-report
+          path: reports/apaganet-smoke.html
