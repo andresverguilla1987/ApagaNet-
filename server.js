@@ -126,7 +126,6 @@ app.get("/api/diag", async (_req, res) => {
 
 // =====================================================
 //  ENDPOINTS ABIERTOS PARA LA UI DE PRUEBAS (sin JWT)
-//  Mantienen compat con tu schema actual sin romper /devices (protegido)
 // =====================================================
 
 // 1) Compatibilidad de módem (usado por el botón "Detectar módem y equipos")
@@ -138,19 +137,15 @@ app.get("/agents/modem-compat", async (req, res) => {
     devices: [],
     created_at: new Date().toISOString(),
   };
-
-  // Registrar opcionalmente el reporte
   try {
     await pool.query("insert into reports(id, agent_id, created_at) values ($1,$2, now())", [report.id, agent_id]);
   } catch (_) {}
-
   res.json({ ok: true, report, fallback: false });
 });
 
 // 2) Últimos dispositivos detectados (fallback abierto para la UI)
 app.get("/agents/devices/latest", async (req, res, next) => {
   try { return next(); } catch {}
-
   const agent_id = String(req.query.agent_id || "");
   res.json({
     ok: true,
@@ -185,18 +180,13 @@ app.post("/agents/devices/resume", async (req, res) => {
 
 // =====================================================
 //  NUEVO: Comandos para el agente (mock en memoria)
-//  - GET  /agents/commands?agent_id=1  -> devuelve array de comandos pendientes
-//  - POST /agents/commands             -> agrega comando en memoria
-//    body: { agent_id, type: "pause"|"resume", device_id, minutes? }
 // =====================================================
 const commandQueue = new Map(); // agent_id -> Array<cmd>
 
 app.get("/agents/commands", (req, res) => {
-  const agentId = String(req.query.agent_id || ""); // el agente siempre envía agent_id
+  const agentId = String(req.query.agent_id || "");
   const list = commandQueue.get(agentId) || [];
-  // Entregamos y vaciamos (estilo "pull once")
   commandQueue.set(agentId, []);
-  // El agente espera un ARRAY crudo (no {ok:true}), así evitamos errores
   return res.json(list);
 });
 
@@ -216,19 +206,188 @@ app.post("/agents/commands", (req, res) => {
 //  Rutas existentes (se mantienen)
 // =====================================================
 app.use("/auth", auth);
-app.use("/devices", requireJWT, devices);      // protegidas por JWT
-app.use("/schedules", requireJWT, schedules);  // protegidas por JWT
-
-// MOCK antes del router real de agents (para que la UI funcione siempre)
+app.use("/devices", requireJWT, devices);
+app.use("/schedules", requireJWT, schedules);
 app.use("/agents", mockRouter);
 app.use("/agents", agents);
-
 app.use("/admin", requireTaskSecret, admin);
 
-// Tarea programada
-app.post("/tasks/run-scheduler", requireTaskSecret, async (_req, res) => {
-  await pool.query("insert into schedule_runs(ran_at,checked,set_blocked,set_unblocked) values (now(),0,0,0)");
-  res.json({ ok: true, ranAt: new Date().toISOString() });
+// =================== NUEVOS ENDPOINTS (MVP tracking) ===================
+
+// 1) Reporte de ubicación (agente)
+app.post("/v1/agents/report-location", async (req, res) => {
+  const { device_id, lat, lon, acc, ts } = req.body || {};
+  if (!device_id || lat == null || lon == null) {
+    return res.status(400).json({ ok: false, error: "device_id, lat, lon son requeridos" });
+  }
+  try {
+    await pool.query(
+      "insert into locations(device_id, lat, lon, accuracy, ts) values ($1,$2,$3,$4, COALESCE(to_timestamp($5/1000.0), now()))",
+      [String(device_id), Number(lat), Number(lon), acc != null ? Number(acc) : null, ts || null]
+    );
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "db error" });
+  }
+});
+
+// 2) Última ubicación (padre)
+app.get("/v1/parents/device/:id/location/latest", requireJWT, async (req, res) => {
+  const deviceId = String(req.params.id || "");
+  try {
+    const r = await pool.query(
+      "select lat, lon, accuracy, extract(epoch from ts)*1000 as ts from locations where device_id=$1 order by ts desc limit 1",
+      [deviceId]
+    );
+    return res.json({ ok: true, data: r.rows[0] || null });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "db error" });
+  }
+});
+
+// 3) Inicio de viaje
+app.post("/v1/agents/report-trip/start", async (req, res) => {
+  const { device_id, start_ts, start_lat, start_lon } = req.body || {};
+  if (!device_id) return res.status(400).json({ ok: false, error: "device_id requerido" });
+  try {
+    const r = await pool.query(
+      "insert into trips(device_id, start_ts, start_lat, start_lon) values ($1, COALESCE(to_timestamp($2/1000.0), now()), $3, $4) returning id",
+      [String(device_id), start_ts || null, start_lat || null, start_lon || null]
+    );
+    return res.json({ ok: true, tripId: r.rows[0].id });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "db error" });
+  }
+});
+
+// 4) Puntos de viaje (batch)
+app.post("/v1/agents/report-trip/points", async (req, res) => {
+  const { trip_id, points } = req.body || {};
+  if (!trip_id || !Array.isArray(points) || points.length === 0) {
+    return res.status(400).json({ ok: false, error: "trip_id y points[]" });
+  }
+  try {
+    const params = [];
+    const values = points.map((p, idx) => {
+      params.push(trip_id, p.lat, p.lon, p.acc ?? null, p.ts ?? null);
+      const base = idx * 5;
+      return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, COALESCE(to_timestamp($${base + 5}/1000.0), now()))`;
+    });
+    await pool.query(
+      `insert into trip_points(trip_id, lat, lon, accuracy, ts) values ${values.join(",")}`,
+      params
+    );
+    return res.json({ ok: true, inserted: points.length });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "db error" });
+  }
+});
+
+// 5) Fin de viaje
+app.post("/v1/agents/report-trip/end", async (req, res) => {
+  const { trip_id, end_ts, end_lat, end_lon } = req.body || {};
+  if (!trip_id) return res.status(400).json({ ok: false, error: "trip_id requerido" });
+  try {
+    await pool.query(
+      "update trips set end_ts = COALESCE(to_timestamp($2/1000.0), now()), end_lat=$3, end_lon=$4 where id=$1",
+      [trip_id, end_ts || null, end_lat || null, end_lon || null]
+    );
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "db error" });
+  }
+});
+
+// 6) Listar trips (padre)
+app.get("/v1/parents/device/:id/trips", requireJWT, async (req, res) => {
+  const deviceId = String(req.params.id || "");
+  const { from, to, limit } = req.query;
+  try {
+    const r = await pool.query(
+      `
+      SELECT id,
+             extract(epoch from start_ts)*1000 as start_ts,
+             extract(epoch from end_ts)*1000   as end_ts,
+             start_lat, start_lon, end_lat, end_lon
+      FROM trips
+      WHERE device_id=$1
+        AND ($2::timestamptz IS NULL OR start_ts >= $2)
+        AND ($3::timestamptz IS NULL OR start_ts <  $3)
+      ORDER BY id DESC
+      LIMIT ${Number(limit) || 50}
+      `,
+      [
+        deviceId,
+        from ? new Date(Number(from)) : null,
+        to ? new Date(Number(to)) : null,
+      ]
+    );
+    return res.json({ ok: true, trips: r.rows });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "db error" });
+  }
+});
+
+// 7) Tamper report
+app.post("/v1/agents/report-tamper", async (req, res) => {
+  const { device_id, reason, details, ts } = req.body || {};
+  if (!device_id || !reason) return res.status(400).json({ ok: false, error: "device_id y reason" });
+  try {
+    await pool.query(
+      "insert into tamper_reports(device_id, reason, details, ts) values ($1,$2,$3, COALESCE(to_timestamp($4/1000.0), now()))",
+      [String(device_id), String(reason), details ? JSON.stringify(details) : null, ts || null]
+    );
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "db error" });
+  }
+});
+
+// 8) Reglas de apps (padre: sobreescribe)
+app.post("/v1/parents/device/:id/app-rules", requireJWT, async (req, res) => {
+  const deviceId = String(req.params.id || "");
+  const { blockedPackages = [], schedules = [] } = req.body || {};
+  try {
+    await pool.query("delete from app_rules where device_id=$1", [deviceId]);
+    for (const pkg of blockedPackages) {
+      await pool.query(
+        "insert into app_rules(device_id, package_name, blocked) values ($1,$2,true)",
+        [deviceId, String(pkg)]
+      );
+    }
+    for (const s of schedules) {
+      await pool.query(
+        "insert into app_rules(device_id, package_name, blocked, start_minute, end_minute, days_mask) values ($1,$2,false,$3,$4,$5)",
+        [deviceId, String(s.package_name), Number(s.start_minute), Number(s.end_minute), Number(s.days_mask ?? 127)]
+      );
+    }
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "db error" });
+  }
+});
+
+// 9) Reglas de apps (agente)
+app.get("/v1/agents/device/:id/app-rules", async (req, res) => {
+  const deviceId = String(req.params.id || "");
+  try {
+    const r = await pool.query(
+      "select package_name, blocked, start_minute, end_minute, days_mask from app_rules where device_id=$1",
+      [deviceId]
+    );
+    return res.json({ ok: true, rules: r.rows });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "db error" });
+  }
 });
 
 // 404 y errores

@@ -1,0 +1,252 @@
+{
+  "info": {
+    "name": "ApagaNet v1 Tracking",
+    "_postman_id": "571a116a-ab7a-40ee-9a66-45fd0b9116a5",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Pruebas de endpoints /v1 (locations, trips, tamper, app-rules)"
+  },
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{BASE_URL}}/api/health",
+          "host": [
+            "{{BASE_URL}}"
+          ],
+          "path": [
+            "api",
+            "health"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Report Location (agent)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"device_id\": \"dev-1\", \"lat\": 19.4326, \"lon\": -99.1332, \"acc\": 12, \"ts\": 1697240000000}"
+        },
+        "url": {
+          "raw": "{{BASE_URL}}/v1/agents/report-location",
+          "host": [
+            "{{BASE_URL}}"
+          ],
+          "path": [
+            "v1",
+            "agents",
+            "report-location"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Latest Location (parent)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{JWT}}"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE_URL}}/v1/parents/device/dev-1/location/latest",
+          "host": [
+            "{{BASE_URL}}"
+          ],
+          "path": [
+            "v1",
+            "parents",
+            "device",
+            "dev-1",
+            "location",
+            "latest"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Trip Start",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"device_id\": \"dev-1\"}"
+        },
+        "url": {
+          "raw": "{{BASE_URL}}/v1/agents/report-trip/start",
+          "host": [
+            "{{BASE_URL}}"
+          ],
+          "path": [
+            "v1",
+            "agents",
+            "report-trip",
+            "start"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Trip Points",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"trip_id\": 1, \"points\": [{\"lat\": 19.43, \"lon\": -99.13}, {\"lat\": 19.44, \"lon\": -99.14}]}"
+        },
+        "url": {
+          "raw": "{{BASE_URL}}/v1/agents/report-trip/points",
+          "host": [
+            "{{BASE_URL}}"
+          ],
+          "path": [
+            "v1",
+            "agents",
+            "report-trip",
+            "points"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Trip End",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"trip_id\": 1}"
+        },
+        "url": {
+          "raw": "{{BASE_URL}}/v1/agents/report-trip/end",
+          "host": [
+            "{{BASE_URL}}"
+          ],
+          "path": [
+            "v1",
+            "agents",
+            "report-trip",
+            "end"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Tamper Report",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"device_id\": \"dev-1\", \"reason\": \"location_disabled\"}"
+        },
+        "url": {
+          "raw": "{{BASE_URL}}/v1/agents/report-tamper",
+          "host": [
+            "{{BASE_URL}}"
+          ],
+          "path": [
+            "v1",
+            "agents",
+            "report-tamper"
+          ]
+        }
+      }
+    },
+    {
+      "name": "App Rules (parent)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{JWT}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"blockedPackages\": [\"com.tiktok.android\"], \"schedules\": [{\"package_name\": \"com.youtube\", \"start_minute\": 480, \"end_minute\": 600, \"days_mask\": 62}]}"
+        },
+        "url": {
+          "raw": "{{BASE_URL}}/v1/parents/device/dev-1/app-rules",
+          "host": [
+            "{{BASE_URL}}"
+          ],
+          "path": [
+            "v1",
+            "parents",
+            "device",
+            "dev-1",
+            "app-rules"
+          ]
+        }
+      }
+    },
+    {
+      "name": "App Rules (agent get)",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{BASE_URL}}/v1/agents/device/dev-1/app-rules",
+          "host": [
+            "{{BASE_URL}}"
+          ],
+          "path": [
+            "v1",
+            "agents",
+            "device",
+            "dev-1",
+            "app-rules"
+          ]
+        }
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "BASE_URL",
+      "value": "https://TU_BACKEND.onrender.com"
+    },
+    {
+      "key": "JWT",
+      "value": ""
+    }
+  ]
+}
