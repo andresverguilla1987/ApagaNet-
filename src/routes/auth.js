@@ -1,9 +1,6 @@
-// src/routes/auth.js  (ESM)
-// Rutas de autenticación para ApagaNet
-// - POST /auth/login  -> { ok, access_token, user }
-// - GET  /auth/me     -> { ok, user }
+// src/routes/auth.js (ESM)
 import express from "express";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";           // <- usa bcryptjs, no bcrypt nativo
 import jwt from "jsonwebtoken";
 import { pool } from "../lib/db.js";
 
@@ -11,7 +8,6 @@ const router = express.Router();
 
 function signJWT(payload) {
   const secret = process.env.JWT_SECRET || "dev-secret";
-  // 12 horas de vigencia
   return jwt.sign(payload, secret, { expiresIn: "12h" });
 }
 
@@ -38,18 +34,14 @@ router.post("/login", async (req, res) => {
     }
 
     const access_token = signJWT({ uid: u.id, email: u.email, role: u.role });
-    return res.json({
-      ok: true,
-      access_token,
-      user: { id: u.id, email: u.email, role: u.role },
-    });
+    return res.json({ ok: true, access_token, user: { id: u.id, email: u.email, role: u.role } });
   } catch (e) {
     console.error(e);
     return res.status(500).json({ ok: false, error: "server error" });
   }
 });
 
-// GET /auth/me  (requiere Bearer <JWT>)
+// GET /auth/me  (Authorization: Bearer <JWT>)
 router.get("/me", async (req, res) => {
   try {
     const h = req.headers.authorization || "";
@@ -59,14 +51,11 @@ router.get("/me", async (req, res) => {
     const secret = process.env.JWT_SECRET || "dev-secret";
     const payload = jwt.verify(token, secret);
 
-    // Trae datos frescos (opcional)
     const q = await pool.query(
       "select id, email, role, created_at from users where id=$1 limit 1",
       [payload.uid]
     );
-
-    const user =
-      q.rows[0] || { id: payload.uid, email: payload.email, role: payload.role };
+    const user = q.rows[0] || { id: payload.uid, email: payload.email, role: payload.role };
     return res.json({ ok: true, user });
   } catch (e) {
     console.error(e);
