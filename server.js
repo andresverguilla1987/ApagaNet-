@@ -1,3 +1,4 @@
+// server.js (ESM) — ApagaNet API
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -6,6 +7,7 @@ import morgan from "morgan";
 import rateLimit from "express-rate-limit";
 import compression from "compression";
 import jwt from "jsonwebtoken";
+import bcrypt from "bcrypt";
 import crypto from "node:crypto";
 import { pool } from "./src/lib/db.js";
 
@@ -24,10 +26,11 @@ const PORT = Number(process.env.PORT) || 10000;
 const VERSION = process.env.VERSION || "0.6.0";
 
 // CORS
+// Acepta CSV/espacios en CORS_ORIGINS y agrega localhost por defecto
 const ORIGINS = [
   ...((process.env.CORS_ORIGINS || "")
     .split(/[\s,]+/)
-    .map(s => s.trim())
+    .map((s) => s.trim())
     .filter(Boolean)),
   "http://localhost:3000",
   "http://localhost:5173",
@@ -36,13 +39,15 @@ const ORIGINS = [
 app.set("trust proxy", 1);
 app.disable("x-powered-by");
 
-app.use(helmet({
-  crossOriginResourcePolicy: { policy: "cross-origin" },
-}));
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  })
+);
 
 const corsOptions = {
   origin(origin, cb) {
-    if (!origin) return cb(null, true);
+    if (!origin) return cb(null, true); // Postman / cURL
     if (ORIGINS.includes(origin)) return cb(null, true);
     return cb(new Error("CORS: Origin not allowed"));
   },
@@ -51,13 +56,23 @@ const corsOptions = {
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   maxAge: 86400,
 };
-app.use((req, res, next) => { res.setHeader("Vary", "Origin"); next(); });
+app.use((req, res, next) => {
+  res.setHeader("Vary", "Origin");
+  next();
+});
 app.use(cors(corsOptions));
 
 app.use(express.json({ limit: "1mb" }));
 app.use(compression());
 app.use(morgan("dev"));
-app.use(rateLimit({ windowMs: 60_000, max: 200, standardHeaders: true, legacyHeaders: false }));
+app.use(
+  rateLimit({
+    windowMs: 60_000,
+    max: 200,
+    standardHeaders: true,
+    legacyHeaders: false,
+  })
+);
 
 // --- Helpers ---
 function requireJWT(req, res, next) {
@@ -78,14 +93,14 @@ function requireTaskSecret(req, res, next) {
   next();
 }
 async function dbPing() {
-  const t0 = (globalThis.performance?.now?.() ?? Date.now());
+  const t0 = globalThis.performance?.now?.() ?? Date.now();
   const r = await pool.query("select 1 as ok");
-  const t1 = (globalThis.performance?.now?.() ?? Date.now());
+  const t1 = globalThis.performance?.now?.() ?? Date.now();
   const latencyMs = Math.round((t1 - t0) * 1000) / 1000;
   return { ok: r.rows?.[0]?.ok === 1, latencyMs };
 }
 
-// --- Raíz ---
+// --- Raíz / Bienvenida ---
 app.head("/", (_req, res) => res.status(200).end());
 app.get("/", (_req, res) => res.send("ApagaNet API OK"));
 
@@ -98,6 +113,8 @@ app.get("/ping", async (_req, res) => {
     res.status(500).json({ ok: false, error: String(e) });
   }
 });
+// Alias con prefijo /api
+app.get("/api/ping", (_req, res) => res.redirect(307, "/ping"));
 
 app.get("/api/health", async (_req, res) => {
   try {
@@ -118,7 +135,13 @@ app.get("/api/health", async (_req, res) => {
 app.get("/api/diag", async (_req, res) => {
   try {
     const { ok: dbOk, latencyMs } = await dbPing();
-    res.json({ ok: true, db: dbOk, dbLatencyMs: latencyMs, version: VERSION, time: new Date().toISOString() });
+    res.json({
+      ok: true,
+      db: dbOk,
+      dbLatencyMs: latencyMs,
+      version: VERSION,
+      time: new Date().toISOString(),
+    });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e) });
   }
@@ -138,14 +161,19 @@ app.get("/agents/modem-compat", async (req, res) => {
     created_at: new Date().toISOString(),
   };
   try {
-    await pool.query("insert into reports(id, agent_id, created_at) values ($1,$2, now())", [report.id, agent_id]);
+    await pool.query("insert into reports(id, agent_id, created_at) values ($1,$2, now())", [
+      report.id,
+      agent_id,
+    ]);
   } catch (_) {}
   res.json({ ok: true, report, fallback: false });
 });
 
 // 2) Últimos dispositivos detectados (fallback abierto para la UI)
 app.get("/agents/devices/latest", async (req, res, next) => {
-  try { return next(); } catch {}
+  try {
+    return next();
+  } catch {}
   const agent_id = String(req.query.agent_id || "");
   res.json({
     ok: true,
@@ -195,7 +223,12 @@ app.post("/agents/commands", (req, res) => {
   if (!agent_id || !type) {
     return res.status(400).json({ ok: false, error: "agent_id y type son requeridos" });
   }
-  const cmd = { type, device_id, minutes: minutes ? Number(minutes) : undefined, created_at: new Date().toISOString() };
+  const cmd = {
+    type,
+    device_id,
+    minutes: minutes ? Number(minutes) : undefined,
+    created_at: new Date().toISOString(),
+  };
   const list = commandQueue.get(String(agent_id)) || [];
   list.push(cmd);
   commandQueue.set(String(agent_id), list);
@@ -203,14 +236,59 @@ app.post("/agents/commands", (req, res) => {
 });
 
 // =====================================================
-//  Rutas existentes (se mantienen)
+//  Rutas existentes + aliases con /api
 // =====================================================
+
+// Auth (router existente)
 app.use("/auth", auth);
+app.use("/api/auth", auth); // alias con prefijo
+
+// Devices / Schedules protegidos con JWT
 app.use("/devices", requireJWT, devices);
+app.use("/api/devices", requireJWT, devices);
+
 app.use("/schedules", requireJWT, schedules);
+app.use("/api/schedules", requireJWT, schedules);
+
+// Agents (mock primero; luego router real)
 app.use("/agents", mockRouter);
 app.use("/agents", agents);
+app.use("/api/agents", mockRouter);
+app.use("/api/agents", agents);
+
+// Admin con TASK_SECRET (no JWT)
 app.use("/admin", requireTaskSecret, admin);
+app.use("/api/admin", requireTaskSecret, admin);
+
+// =====================================================
+//  Opcional: /auth/register aquí mismo (para pruebas)
+//  Requiere tabla users(email, password_hash, role)
+// =====================================================
+app.post("/auth/register", async (req, res) => {
+  try {
+    const { email, password, role = "user" } = req.body || {};
+    if (!email || !password) return res.status(400).json({ ok: false, error: "email y password requeridos" });
+
+    // evitar duplicados
+    const exists = await pool.query("select 1 from users where email=$1 limit 1", [String(email)]);
+    if (exists.rowCount > 0) return res.status(409).json({ ok: false, error: "email ya existe" });
+
+    const hash = await bcrypt.hash(String(password), 10);
+    await pool.query(
+      "insert into users (email, password_hash, role, created_at) values ($1,$2,$3, now())",
+      [String(email), String(hash), String(role)]
+    );
+    return res.status(201).json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "db error" });
+  }
+});
+// alias con prefijo
+app.post("/api/auth/register", (req, res, next) => {
+  req.url = "/auth/register"; // reusa el handler de arriba
+  next();
+});
 
 // =================== NUEVOS ENDPOINTS (MVP tracking) ===================
 
@@ -321,11 +399,7 @@ app.get("/v1/parents/device/:id/trips", requireJWT, async (req, res) => {
       ORDER BY id DESC
       LIMIT ${Number(limit) || 50}
       `,
-      [
-        deviceId,
-        from ? new Date(Number(from)) : null,
-        to ? new Date(Number(to)) : null,
-      ]
+      [deviceId, from ? new Date(Number(from)) : null, to ? new Date(Number(to)) : null]
     );
     return res.json({ ok: true, trips: r.rows });
   } catch (e) {
@@ -357,10 +431,10 @@ app.post("/v1/parents/device/:id/app-rules", requireJWT, async (req, res) => {
   try {
     await pool.query("delete from app_rules where device_id=$1", [deviceId]);
     for (const pkg of blockedPackages) {
-      await pool.query(
-        "insert into app_rules(device_id, package_name, blocked) values ($1,$2,true)",
-        [deviceId, String(pkg)]
-      );
+      await pool.query("insert into app_rules(device_id, package_name, blocked) values ($1,$2,true)", [
+        deviceId,
+        String(pkg),
+      ]);
     }
     for (const s of schedules) {
       await pool.query(
@@ -391,7 +465,7 @@ app.get("/v1/agents/device/:id/app-rules", async (req, res) => {
 });
 
 // 404 y errores
-app.use((_req, res) => res.status(404).json({ ok: false, error: "No encontrado" }));
+app.use((req, res) => res.status(404).json({ ok: false, error: "No encontrado", path: req.originalUrl }));
 app.use((err, _req, res, _next) => {
   console.error(err);
   res.status(500).json({ ok: false, error: "Server error" });
