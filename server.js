@@ -1,4 +1,4 @@
-// server.js (ESM) — ApagaNet API (fix bcryptjs + register handler)
+// server.js (ESM) — ApagaNet API (fix bcryptjs + register handler + admin auth flexible)
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -7,7 +7,7 @@ import morgan from "morgan";
 import rateLimit from "express-rate-limit";
 import compression from "compression";
 import jwt from "jsonwebtoken";
-import bcrypt from "bcryptjs";                // <-- usa bcryptjs
+import bcrypt from "bcryptjs"; // usa bcryptjs (más portable)
 import crypto from "node:crypto";
 import { pool } from "./src/lib/db.js";
 
@@ -46,22 +46,32 @@ const corsOptions = {
     return cb(new Error("CORS: Origin not allowed"));
   },
   credentials: true,
-  allowedHeaders: ["Content-Type", "Authorization", "x-apaganet-token"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "x-apaganet-token",
+    "x-task-secret", // <-- necesario para /admin
+  ],
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   maxAge: 86400,
 };
-app.use((req, res, next) => { res.setHeader("Vary", "Origin"); next(); });
+app.use((req, res, next) => {
+  res.setHeader("Vary", "Origin");
+  next();
+});
 app.use(cors(corsOptions));
 
 app.use(express.json({ limit: "1mb" }));
 app.use(compression());
 app.use(morgan("dev"));
-app.use(rateLimit({
-  windowMs: 60_000,
-  max: 200,
-  standardHeaders: true,
-  legacyHeaders: false,
-}));
+app.use(
+  rateLimit({
+    windowMs: 60_000,
+    max: 200,
+    standardHeaders: true,
+    legacyHeaders: false,
+  })
+);
 
 // --- Helpers ---
 function requireJWT(req, res, next) {
@@ -75,12 +85,38 @@ function requireJWT(req, res, next) {
     return res.status(401).json({ ok: false, error: "Invalid token" });
   }
 }
+
+/**
+ * Admin auth con TASK_SECRET:
+ * - Acepta Authorization: Bearer <TASK_SECRET>
+ * - O header 'x-task-secret: <TASK_SECRET>'
+ * - Compara valores 'trim' para evitar espacios invisibles
+ */
 function requireTaskSecret(req, res, next) {
+  const expected = (process.env.TASK_SECRET || "").trim();
+  if (!expected) {
+    return res
+      .status(500)
+      .json({ ok: false, error: "TASK_SECRET no configurado en el servidor" });
+  }
+
   const h = req.headers.authorization || "";
-  const token = h.startsWith("Bearer ") ? h.slice(7) : null;
-  if (!token || token !== (process.env.TASK_SECRET || "")) return res.sendStatus(401);
+  const bearer = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
+  const headerAlt = (req.headers["x-task-secret"] || "").toString().trim();
+
+  const provided = bearer || headerAlt;
+
+  if (!provided) {
+    return res
+      .status(401)
+      .json({ ok: false, error: "Falta credencial admin (Bearer o x-task-secret)" });
+  }
+  if (provided !== expected) {
+    return res.status(401).json({ ok: false, error: "TASK_SECRET inválido" });
+  }
   next();
 }
+
 async function dbPing() {
   const t0 = globalThis.performance?.now?.() ?? Date.now();
   const r = await pool.query("select 1 as ok");
@@ -123,7 +159,13 @@ app.get("/api/health", async (_req, res) => {
 app.get("/api/diag", async (_req, res) => {
   try {
     const { ok: dbOk, latencyMs } = await dbPing();
-    res.json({ ok: true, db: dbOk, dbLatencyMs: latencyMs, version: VERSION, time: new Date().toISOString() });
+    res.json({
+      ok: true,
+      db: dbOk,
+      dbLatencyMs: latencyMs,
+      version: VERSION,
+      time: new Date().toISOString(),
+    });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e) });
   }
@@ -134,17 +176,32 @@ app.get("/api/diag", async (_req, res) => {
 // =====================================================
 app.get("/agents/modem-compat", async (req, res) => {
   const agent_id = String(req.query.agent_id || "");
-  const report = { id: crypto.randomUUID(), agent_id, devices: [], created_at: new Date().toISOString() };
+  const report = {
+    id: crypto.randomUUID(),
+    agent_id,
+    devices: [],
+    created_at: new Date().toISOString(),
+  };
   try {
-    await pool.query("insert into reports(id, agent_id, created_at) values ($1,$2, now())", [report.id, agent_id]);
+    await pool.query("insert into reports(id, agent_id, created_at) values ($1,$2, now())", [
+      report.id,
+      agent_id,
+    ]);
   } catch (_) {}
   res.json({ ok: true, report, fallback: false });
 });
 
 app.get("/agents/devices/latest", async (req, res, next) => {
-  try { return next(); } catch {}
+  try {
+    return next();
+  } catch {}
   const agent_id = String(req.query.agent_id || "");
-  res.json({ ok: true, report: { id: crypto.randomUUID(), agent_id, created_at: new Date().toISOString() }, devices: [], fallback: true });
+  res.json({
+    ok: true,
+    report: { id: crypto.randomUUID(), agent_id, created_at: new Date().toISOString() },
+    devices: [],
+    fallback: true,
+  });
 });
 
 app.post("/agents/devices/pause", async (req, res) => {
@@ -183,8 +240,15 @@ app.get("/agents/commands", (req, res) => {
 
 app.post("/agents/commands", (req, res) => {
   const { agent_id, type, device_id, minutes } = req.body || {};
-  if (!agent_id || !type) return res.status(400).json({ ok: false, error: "agent_id y type son requeridos" });
-  const cmd = { type, device_id, minutes: minutes ? Number(minutes) : undefined, created_at: new Date().toISOString() };
+  if (!agent_id || !type) {
+    return res.status(400).json({ ok: false, error: "agent_id y type son requeridos" });
+  }
+  const cmd = {
+    type,
+    device_id,
+    minutes: minutes ? Number(minutes) : undefined,
+    created_at: new Date().toISOString(),
+  };
   const list = commandQueue.get(String(agent_id)) || [];
   list.push(cmd);
   commandQueue.set(String(agent_id), list);
@@ -208,6 +272,7 @@ app.use("/agents", agents);
 app.use("/api/agents", mockRouter);
 app.use("/api/agents", agents);
 
+// Admin con TASK_SECRET (no JWT)
 app.use("/admin", requireTaskSecret, admin);
 app.use("/api/admin", requireTaskSecret, admin);
 
@@ -239,7 +304,9 @@ app.post("/api/auth/register", registerHandler);
 // =================== NUEVOS ENDPOINTS (MVP tracking) ===================
 app.post("/v1/agents/report-location", async (req, res) => {
   const { device_id, lat, lon, acc, ts } = req.body || {};
-  if (!device_id || lat == null || lon == null) return res.status(400).json({ ok: false, error: "device_id, lat, lon son requeridos" });
+  if (!device_id || lat == null || lon == null) {
+    return res.status(400).json({ ok: false, error: "device_id, lat, lon son requeridos" });
+  }
   try {
     await pool.query(
       "insert into locations(device_id, lat, lon, accuracy, ts) values ($1,$2,$3,$4, COALESCE(to_timestamp($5/1000.0), now()))",
@@ -247,7 +314,8 @@ app.post("/v1/agents/report-location", async (req, res) => {
     );
     return res.json({ ok: true });
   } catch (e) {
-    console.error(e); return res.status(500).json({ ok: false, error: "db error" });
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "db error" });
   }
 });
 
@@ -260,7 +328,8 @@ app.get("/v1/parents/device/:id/location/latest", requireJWT, async (req, res) =
     );
     return res.json({ ok: true, data: r.rows[0] || null });
   } catch (e) {
-    console.error(e); return res.status(500).json({ ok: false, error: "db error" });
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "db error" });
   }
 });
 
@@ -274,13 +343,16 @@ app.post("/v1/agents/report-trip/start", async (req, res) => {
     );
     return res.json({ ok: true, tripId: r.rows[0].id });
   } catch (e) {
-    console.error(e); return res.status(500).json({ ok: false, error: "db error" });
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "db error" });
   }
 });
 
 app.post("/v1/agents/report-trip/points", async (req, res) => {
   const { trip_id, points } = req.body || {};
-  if (!trip_id || !Array.isArray(points) || points.length === 0) return res.status(400).json({ ok: false, error: "trip_id y points[]" });
+  if (!trip_id || !Array.isArray(points) || points.length === 0) {
+    return res.status(400).json({ ok: false, error: "trip_id y points[]" });
+  }
   try {
     const params = [];
     const values = points.map((p, idx) => {
@@ -288,10 +360,14 @@ app.post("/v1/agents/report-trip/points", async (req, res) => {
       const base = idx * 5;
       return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, COALESCE(to_timestamp($${base + 5}/1000.0), now()))`;
     });
-    await pool.query(`insert into trip_points(trip_id, lat, lon, accuracy, ts) values ${values.join(",")}`, params);
+    await pool.query(
+      `insert into trip_points(trip_id, lat, lon, accuracy, ts) values ${values.join(",")}`,
+      params
+    );
     return res.json({ ok: true, inserted: points.length });
   } catch (e) {
-    console.error(e); return res.status(500).json({ ok: false, error: "db error" });
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "db error" });
   }
 });
 
@@ -305,7 +381,8 @@ app.post("/v1/agents/report-trip/end", async (req, res) => {
     );
     return res.json({ ok: true });
   } catch (e) {
-    console.error(e); return res.status(500).json({ ok: false, error: "db error" });
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "db error" });
   }
 });
 
@@ -330,7 +407,8 @@ app.get("/v1/parents/device/:id/trips", requireJWT, async (req, res) => {
     );
     return res.json({ ok: true, trips: r.rows });
   } catch (e) {
-    console.error(e); return res.status(500).json({ ok: false, error: "db error" });
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "db error" });
   }
 });
 
@@ -344,7 +422,8 @@ app.post("/v1/agents/report-tamper", async (req, res) => {
     );
     return res.json({ ok: true });
   } catch (e) {
-    console.error(e); return res.status(500).json({ ok: false, error: "db error" });
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "db error" });
   }
 });
 
@@ -354,7 +433,10 @@ app.post("/v1/parents/device/:id/app-rules", requireJWT, async (req, res) => {
   try {
     await pool.query("delete from app_rules where device_id=$1", [deviceId]);
     for (const pkg of blockedPackages) {
-      await pool.query("insert into app_rules(device_id, package_name, blocked) values ($1,$2,true)", [deviceId, String(pkg)]);
+      await pool.query("insert into app_rules(device_id, package_name, blocked) values ($1,$2,true)", [
+        deviceId,
+        String(pkg),
+      ]);
     }
     for (const s of schedules) {
       await pool.query(
@@ -364,7 +446,8 @@ app.post("/v1/parents/device/:id/app-rules", requireJWT, async (req, res) => {
     }
     return res.json({ ok: true });
   } catch (e) {
-    console.error(e); return res.status(500).json({ ok: false, error: "db error" });
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "db error" });
   }
 });
 
@@ -377,7 +460,8 @@ app.get("/v1/agents/device/:id/app-rules", async (req, res) => {
     );
     return res.json({ ok: true, rules: r.rows });
   } catch (e) {
-    console.error(e); return res.status(500).json({ ok: false, error: "db error" });
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "db error" });
   }
 });
 
