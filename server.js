@@ -1,4 +1,8 @@
-// server.js (ESM) — ApagaNet API (fix bcryptjs + register handler + admin auth flexible)
+// server.js (ESM) — ApagaNet API
+// + fix bcryptjs, /auth/register
+// + admin auth flexible (Bearer <TASK_SECRET> o x-task-secret)
+// + integración de rutas de ALERTAS
+
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -7,17 +11,18 @@ import morgan from "morgan";
 import rateLimit from "express-rate-limit";
 import compression from "compression";
 import jwt from "jsonwebtoken";
-import bcrypt from "bcryptjs"; // usa bcryptjs (más portable)
+import bcrypt from "bcryptjs"; // portable en Render
 import crypto from "node:crypto";
 import { pool } from "./src/lib/db.js";
 
-// Routers existentes
+// Routers
 import auth from "./src/routes/auth.js";
 import devices from "./src/routes/devices.js";
 import schedules from "./src/routes/schedules.js";
 import agents from "./src/routes/agents.js";
 import admin from "./src/routes/admin.js";
-// MOCK para pruebas de UI (equipos simulados)
+import alerts from "./src/routes/alerts.js";      // <-- NUEVO
+// MOCK
 import mockRouter from "./src/routes/mockRouter.js";
 
 // --- App base ---
@@ -25,7 +30,7 @@ const app = express();
 const PORT = Number(process.env.PORT) || 10000;
 const VERSION = process.env.VERSION || "0.6.0";
 
-// CORS: acepta CSV/espacios en CORS_ORIGINS + localhost por defecto
+// CORS
 const ORIGINS = [
   ...((process.env.CORS_ORIGINS || "")
     .split(/[\s,]+/)
@@ -50,7 +55,7 @@ const corsOptions = {
     "Content-Type",
     "Authorization",
     "x-apaganet-token",
-    "x-task-secret", // <-- necesario para /admin
+    "x-task-secret", // /admin y funciones
   ],
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   maxAge: 86400,
@@ -90,7 +95,6 @@ function requireJWT(req, res, next) {
  * Admin auth con TASK_SECRET:
  * - Acepta Authorization: Bearer <TASK_SECRET>
  * - O header 'x-task-secret: <TASK_SECRET>'
- * - Compara valores 'trim' para evitar espacios invisibles
  */
 function requireTaskSecret(req, res, next) {
   const expected = (process.env.TASK_SECRET || "").trim();
@@ -103,7 +107,6 @@ function requireTaskSecret(req, res, next) {
   const h = req.headers.authorization || "";
   const bearer = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
   const headerAlt = (req.headers["x-task-secret"] || "").toString().trim();
-
   const provided = bearer || headerAlt;
 
   if (!provided) {
@@ -227,7 +230,7 @@ app.post("/agents/devices/resume", async (req, res) => {
 });
 
 // =====================================================
-//  NUEVO: Comandos para el agente (mock en memoria)
+//  Comandos mock para agentes (en memoria)
 // =====================================================
 const commandQueue = new Map(); // agent_id -> Array<cmd>
 
@@ -256,7 +259,7 @@ app.post("/agents/commands", (req, res) => {
 });
 
 // =====================================================
-//  Rutas existentes + aliases con /api
+//  Rutas existentes + aliases /api
 // =====================================================
 app.use("/auth", auth);
 app.use("/api/auth", auth);
@@ -272,9 +275,20 @@ app.use("/agents", agents);
 app.use("/api/agents", mockRouter);
 app.use("/api/agents", agents);
 
-// Admin con TASK_SECRET (no JWT)
+// Admin con TASK_SECRET (sin JWT)
 app.use("/admin", requireTaskSecret, admin);
 app.use("/api/admin", requireTaskSecret, admin);
+
+// =====================================================
+//  ALERTAS (NUEVO)  — protegido con JWT
+//  Montamos el router bajo /v1 (y alias /api/v1)
+//  Dentro de alerts.js defines rutas como:
+//   GET  /parents/device/:deviceId/alerts
+//   POST /parents/device/:deviceId/alerts
+//   POST /parents/device/:deviceId/alerts/test-dispatch
+// =====================================================
+app.use("/v1", requireJWT, alerts);
+app.use("/api/v1", requireJWT, alerts);
 
 // =====================================================
 //  /auth/register aquí mismo (para pruebas rápidas)
@@ -282,10 +296,14 @@ app.use("/api/admin", requireTaskSecret, admin);
 const registerHandler = async (req, res) => {
   try {
     const { email, password, role = "user" } = req.body || {};
-    if (!email || !password) return res.status(400).json({ ok: false, error: "email y password requeridos" });
+    if (!email || !password) {
+      return res.status(400).json({ ok: false, error: "email y password requeridos" });
+    }
 
     const exists = await pool.query("select 1 from users where email=$1 limit 1", [String(email)]);
-    if (exists.rowCount > 0) return res.status(409).json({ ok: false, error: "email ya existe" });
+    if (exists.rowCount > 0) {
+      return res.status(409).json({ ok: false, error: "email ya existe" });
+    }
 
     const hash = await bcrypt.hash(String(password), 10);
     await pool.query(
@@ -301,7 +319,7 @@ const registerHandler = async (req, res) => {
 app.post("/auth/register", registerHandler);
 app.post("/api/auth/register", registerHandler);
 
-// =================== NUEVOS ENDPOINTS (MVP tracking) ===================
+// =================== Tracking (MVP) ===================
 app.post("/v1/agents/report-location", async (req, res) => {
   const { device_id, lat, lon, acc, ts } = req.body || {};
   if (!device_id || lat == null || lon == null) {
@@ -466,7 +484,9 @@ app.get("/v1/agents/device/:id/app-rules", async (req, res) => {
 });
 
 // 404 y errores
-app.use((req, res) => res.status(404).json({ ok: false, error: "No encontrado", path: req.originalUrl }));
+app.use((req, res) =>
+  res.status(404).json({ ok: false, error: "No encontrado", path: req.originalUrl })
+);
 app.use((err, _req, res, _next) => {
   console.error(err);
   res.status(500).json({ ok: false, error: "Server error" });
