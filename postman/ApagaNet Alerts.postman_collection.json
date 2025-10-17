@@ -1,0 +1,115 @@
+{
+  "info": {
+    "name": "ApagaNet Alerts",
+    "_postman_id": "8f7f7d52-3c8b-4b03-9d2b-1234567890ab",
+    "description": "Smoke tests for Alerts API (ApagaNet)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Create (agent with TASK_SECRET)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Task-Secret",
+            "value": "{{TASK_SECRET}}"
+          }
+        ],
+        "url": {
+          "raw": "{{API_URL}}/alerts",
+          "host": [
+            "{{API_URL}}"
+          ],
+          "path": [
+            "alerts"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"level\": \"warn\", \"title\": \"Uso alto de datos\", \"message\": \"El dispositivo excedió 2GB\", \"home_id\": \"HOME123\", \"device_id\": \"AA:BB:CC:DD:EE:FF\", \"metadata\": {\"gb\": 2.4}}"
+        }
+      }
+    },
+    {
+      "name": "List unread (JWT)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{JWT}}"
+          }
+        ],
+        "url": {
+          "raw": "{{API_URL}}/alerts?unread=1&limit=20",
+          "host": [
+            "{{API_URL}}"
+          ],
+          "path": [
+            "alerts"
+          ],
+          "query": [
+            {
+              "key": "unread",
+              "value": "1"
+            },
+            {
+              "key": "limit",
+              "value": "20"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Mark as read (JWT)",
+      "request": {
+        "method": "PATCH",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{JWT}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{API_URL}}/alerts/:id/read",
+          "host": [
+            "{{API_URL}}"
+          ],
+          "path": [
+            "alerts",
+            ":id",
+            "read"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"read\": true}"
+        }
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "API_URL",
+      "value": "https://apaganet-zmsa.onrender.com"
+    },
+    {
+      "key": "JWT",
+      "value": ""
+    },
+    {
+      "key": "TASK_SECRET",
+      "value": ""
+    }
+  ]
+}
