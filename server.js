@@ -1,8 +1,4 @@
-// server.js (ESM) — ApagaNet API
-// + fix bcryptjs, /auth/register
-// + admin auth flexible (Bearer <TASK_SECRET> o x-task-secret)
-// + integración de rutas de ALERTAS
-
+// server.js (ESM) — ApagaNet API (drop-in actualizado)
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -11,26 +7,25 @@ import morgan from "morgan";
 import rateLimit from "express-rate-limit";
 import compression from "compression";
 import jwt from "jsonwebtoken";
-import bcrypt from "bcryptjs"; // portable en Render
+import bcrypt from "bcryptjs";
 import crypto from "node:crypto";
 import { pool } from "./src/lib/db.js";
 
-// Routers
 import auth from "./src/routes/auth.js";
 import devices from "./src/routes/devices.js";
 import schedules from "./src/routes/schedules.js";
 import agents from "./src/routes/agents.js";
 import admin from "./src/routes/admin.js";
-import alerts from "./src/routes/alerts.js";      // <-- NUEVO
-// MOCK
+import alerts from "./src/routes/alerts.js";      // /v1 (JWT)
 import mockRouter from "./src/routes/mockRouter.js";
 
-// --- App base ---
+import alertsSystem from "./src/routes/alerts-system.js";      // /alerts (TASK_SECRET)
+import notificationsRouter from "./src/routes/notifications.js"; // suscripciones + dispatch
+
 const app = express();
 const PORT = Number(process.env.PORT) || 10000;
 const VERSION = process.env.VERSION || "0.6.0";
 
-// CORS
 const ORIGINS = [
   ...((process.env.CORS_ORIGINS || "")
     .split(/[\s,]+/)
@@ -46,7 +41,7 @@ app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
 
 const corsOptions = {
   origin(origin, cb) {
-    if (!origin) return cb(null, true); // Postman/cURL
+    if (!origin) return cb(null, true);
     if (ORIGINS.includes(origin)) return cb(null, true);
     return cb(new Error("CORS: Origin not allowed"));
   },
@@ -55,212 +50,53 @@ const corsOptions = {
     "Content-Type",
     "Authorization",
     "x-apaganet-token",
-    "x-task-secret", // /admin y funciones
+    "x-task-secret",
   ],
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   maxAge: 86400,
 };
-app.use((req, res, next) => {
-  res.setHeader("Vary", "Origin");
-  next();
-});
+app.use((req, res, next) => { res.setHeader("Vary", "Origin"); next(); });
 app.use(cors(corsOptions));
-
 app.use(express.json({ limit: "1mb" }));
 app.use(compression());
 app.use(morgan("dev"));
-app.use(
-  rateLimit({
-    windowMs: 60_000,
-    max: 200,
-    standardHeaders: true,
-    legacyHeaders: false,
-  })
-);
+app.use(rateLimit({ windowMs: 60_000, max: 200, standardHeaders: true, legacyHeaders: false }));
 
-// --- Helpers ---
 function requireJWT(req, res, next) {
   const h = req.headers.authorization || "";
   const token = h.startsWith("Bearer ") ? h.slice(7) : null;
   if (!token) return res.status(401).json({ ok: false, error: "No token" });
-  try {
-    req.user = jwt.verify(token, process.env.JWT_SECRET || "dev-secret");
-    next();
-  } catch {
-    return res.status(401).json({ ok: false, error: "Invalid token" });
-  }
+  try { req.user = jwt.verify(token, process.env.JWT_SECRET || "dev-secret"); next(); }
+  catch { return res.status(401).json({ ok: false, error: "Invalid token" }); }
 }
-
-/**
- * Admin auth con TASK_SECRET:
- * - Acepta Authorization: Bearer <TASK_SECRET>
- * - O header 'x-task-secret: <TASK_SECRET>'
- */
 function requireTaskSecret(req, res, next) {
   const expected = (process.env.TASK_SECRET || "").trim();
-  if (!expected) {
-    return res
-      .status(500)
-      .json({ ok: false, error: "TASK_SECRET no configurado en el servidor" });
-  }
-
+  if (!expected) return res.status(500).json({ ok: false, error: "TASK_SECRET no configurado" });
   const h = req.headers.authorization || "";
   const bearer = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
   const headerAlt = (req.headers["x-task-secret"] || "").toString().trim();
   const provided = bearer || headerAlt;
-
-  if (!provided) {
-    return res
-      .status(401)
-      .json({ ok: false, error: "Falta credencial admin (Bearer o x-task-secret)" });
-  }
-  if (provided !== expected) {
-    return res.status(401).json({ ok: false, error: "TASK_SECRET inválido" });
-  }
+  if (!provided) return res.status(401).json({ ok: false, error: "Falta credencial admin" });
+  if (provided !== expected) return res.status(401).json({ ok: false, error: "TASK_SECRET inválido" });
   next();
 }
 
-async function dbPing() {
-  const t0 = globalThis.performance?.now?.() ?? Date.now();
-  const r = await pool.query("select 1 as ok");
-  const t1 = globalThis.performance?.now?.() ?? Date.now();
-  const latencyMs = Math.round((t1 - t0) * 1000) / 1000;
-  return { ok: r.rows?.[0]?.ok === 1, latencyMs };
-}
-
-// --- Raíz / Bienvenida ---
 app.head("/", (_req, res) => res.status(200).end());
 app.get("/", (_req, res) => res.send("ApagaNet API OK"));
-
-// --- Health/Ping ---
 app.get("/ping", async (_req, res) => {
-  try {
-    const r = await dbPing();
-    res.json({ ok: true, db: r.ok, dbLatencyMs: r.latencyMs, version: VERSION });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: String(e) });
-  }
+  try { const r = await pool.query("select 1 as ok"); res.json({ ok: true, db: r.rows?.[0]?.ok === 1, version: VERSION }); }
+  catch (e) { res.status(500).json({ ok: false, error: String(e) }); }
 });
 app.get("/api/ping", (_req, res) => res.redirect(307, "/ping"));
 
-app.get("/api/health", async (_req, res) => {
-  try {
-    const startedAt = process.uptime ? Date.now() - Math.round(process.uptime() * 1000) : null;
-    const { ok: dbOk, latencyMs } = await dbPing();
-    res.json({
-      ok: true,
-      version: VERSION,
-      uptimeSec: Math.round(process.uptime?.() ?? 0),
-      startedAt: startedAt ? new Date(startedAt).toISOString() : null,
-      db: { ok: dbOk, latencyMs },
-    });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: String(e) });
-  }
-});
-
-app.get("/api/diag", async (_req, res) => {
-  try {
-    const { ok: dbOk, latencyMs } = await dbPing();
-    res.json({
-      ok: true,
-      db: dbOk,
-      dbLatencyMs: latencyMs,
-      version: VERSION,
-      time: new Date().toISOString(),
-    });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: String(e) });
-  }
-});
-
-// =====================================================
-//  ENDPOINTS ABIERTOS PARA LA UI DE PRUEBAS (sin JWT)
-// =====================================================
 app.get("/agents/modem-compat", async (req, res) => {
   const agent_id = String(req.query.agent_id || "");
-  const report = {
-    id: crypto.randomUUID(),
-    agent_id,
-    devices: [],
-    created_at: new Date().toISOString(),
-  };
-  try {
-    await pool.query("insert into reports(id, agent_id, created_at) values ($1,$2, now())", [
-      report.id,
-      agent_id,
-    ]);
-  } catch (_) {}
+  const report = { id: crypto.randomUUID(), agent_id, devices: [], created_at: new Date().toISOString() };
+  try { await pool.query("insert into reports(id, agent_id, created_at) values ($1,$2, now())", [ report.id, agent_id ]); } catch {}
   res.json({ ok: true, report, fallback: false });
 });
 
-app.get("/agents/devices/latest", async (req, res, next) => {
-  try {
-    return next();
-  } catch {}
-  const agent_id = String(req.query.agent_id || "");
-  res.json({
-    ok: true,
-    report: { id: crypto.randomUUID(), agent_id, created_at: new Date().toISOString() },
-    devices: [],
-    fallback: true,
-  });
-});
-
-app.post("/agents/devices/pause", async (req, res) => {
-  const { agent_id, device_id, minutes = 15 } = req.body || {};
-  try {
-    await pool.query(
-      "insert into decisions(id, agent_id, device_id, action, minutes, created_at) values ($1,$2,$3,$4,$5, now())",
-      [crypto.randomUUID(), String(agent_id || ""), String(device_id || ""), "pause", Number(minutes) || 15]
-    );
-  } catch (_) {}
-  res.json({ ok: true, applied: "pause", agent_id, device_id, minutes });
-});
-
-app.post("/agents/devices/resume", async (req, res) => {
-  const { agent_id, device_id } = req.body || {};
-  try {
-    await pool.query(
-      "insert into decisions(id, agent_id, device_id, action, created_at) values ($1,$2,$3,$4, now())",
-      [crypto.randomUUID(), String(agent_id || ""), String(device_id || ""), "resume"]
-    );
-  } catch (_) {}
-  res.json({ ok: true, applied: "resume", agent_id, device_id });
-});
-
-// =====================================================
-//  Comandos mock para agentes (en memoria)
-// =====================================================
-const commandQueue = new Map(); // agent_id -> Array<cmd>
-
-app.get("/agents/commands", (req, res) => {
-  const agentId = String(req.query.agent_id || "");
-  const list = commandQueue.get(agentId) || [];
-  commandQueue.set(agentId, []);
-  return res.json(list);
-});
-
-app.post("/agents/commands", (req, res) => {
-  const { agent_id, type, device_id, minutes } = req.body || {};
-  if (!agent_id || !type) {
-    return res.status(400).json({ ok: false, error: "agent_id y type son requeridos" });
-  }
-  const cmd = {
-    type,
-    device_id,
-    minutes: minutes ? Number(minutes) : undefined,
-    created_at: new Date().toISOString(),
-  };
-  const list = commandQueue.get(String(agent_id)) || [];
-  list.push(cmd);
-  commandQueue.set(String(agent_id), list);
-  return res.json({ ok: true, queued: cmd, totalPending: list.length });
-});
-
-// =====================================================
-//  Rutas existentes + aliases /api
-// =====================================================
+// Rutas existentes
 app.use("/auth", auth);
 app.use("/api/auth", auth);
 
@@ -279,223 +115,18 @@ app.use("/api/agents", agents);
 app.use("/admin", requireTaskSecret, admin);
 app.use("/api/admin", requireTaskSecret, admin);
 
-// =====================================================
-//  ALERTAS (NUEVO)  — protegido con JWT
-//  Montamos el router bajo /v1 (y alias /api/v1)
-//  Dentro de alerts.js defines rutas como:
-//   GET  /parents/device/:deviceId/alerts
-//   POST /parents/device/:deviceId/alerts
-//   POST /parents/device/:deviceId/alerts/test-dispatch
-// =====================================================
+// NUEVO: Notificaciones (suscripciones + dispatch)
+app.use("/", notificationsRouter);
+
+// ALERTAS protegidas con JWT (tus /v1)
 app.use("/v1", requireJWT, alerts);
 app.use("/api/v1", requireJWT, alerts);
 
-// =====================================================
-//  /auth/register aquí mismo (para pruebas rápidas)
-// =====================================================
-const registerHandler = async (req, res) => {
-  try {
-    const { email, password, role = "user" } = req.body || {};
-    if (!email || !password) {
-      return res.status(400).json({ ok: false, error: "email y password requeridos" });
-    }
+// ALERTAS de sistema (agentes/cron) con TASK_SECRET
+app.use("/alerts", requireTaskSecret, alertsSystem);
 
-    const exists = await pool.query("select 1 from users where email=$1 limit 1", [String(email)]);
-    if (exists.rowCount > 0) {
-      return res.status(409).json({ ok: false, error: "email ya existe" });
-    }
+// 404 / errores
+app.use((req, res) => res.status(404).json({ ok: false, error: "No encontrado", path: req.originalUrl }));
+app.use((err, _req, res, _next) => { console.error(err); res.status(500).json({ ok: false, error: "Server error" }); });
 
-    const hash = await bcrypt.hash(String(password), 10);
-    await pool.query(
-      "insert into users (email, password_hash, role, created_at) values ($1,$2,$3, now())",
-      [String(email), String(hash), String(role)]
-    );
-    return res.status(201).json({ ok: true });
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ ok: false, error: "db error" });
-  }
-};
-app.post("/auth/register", registerHandler);
-app.post("/api/auth/register", registerHandler);
-
-// =================== Tracking (MVP) ===================
-app.post("/v1/agents/report-location", async (req, res) => {
-  const { device_id, lat, lon, acc, ts } = req.body || {};
-  if (!device_id || lat == null || lon == null) {
-    return res.status(400).json({ ok: false, error: "device_id, lat, lon son requeridos" });
-  }
-  try {
-    await pool.query(
-      "insert into locations(device_id, lat, lon, accuracy, ts) values ($1,$2,$3,$4, COALESCE(to_timestamp($5/1000.0), now()))",
-      [String(device_id), Number(lat), Number(lon), acc != null ? Number(acc) : null, ts || null]
-    );
-    return res.json({ ok: true });
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ ok: false, error: "db error" });
-  }
-});
-
-app.get("/v1/parents/device/:id/location/latest", requireJWT, async (req, res) => {
-  const deviceId = String(req.params.id || "");
-  try {
-    const r = await pool.query(
-      "select lat, lon, accuracy, extract(epoch from ts)*1000 as ts from locations where device_id=$1 order by ts desc limit 1",
-      [deviceId]
-    );
-    return res.json({ ok: true, data: r.rows[0] || null });
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ ok: false, error: "db error" });
-  }
-});
-
-app.post("/v1/agents/report-trip/start", async (req, res) => {
-  const { device_id, start_ts, start_lat, start_lon } = req.body || {};
-  if (!device_id) return res.status(400).json({ ok: false, error: "device_id requerido" });
-  try {
-    const r = await pool.query(
-      "insert into trips(device_id, start_ts, start_lat, start_lon) values ($1, COALESCE(to_timestamp($2/1000.0), now()), $3, $4) returning id",
-      [String(device_id), start_ts || null, start_lat || null, start_lon || null]
-    );
-    return res.json({ ok: true, tripId: r.rows[0].id });
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ ok: false, error: "db error" });
-  }
-});
-
-app.post("/v1/agents/report-trip/points", async (req, res) => {
-  const { trip_id, points } = req.body || {};
-  if (!trip_id || !Array.isArray(points) || points.length === 0) {
-    return res.status(400).json({ ok: false, error: "trip_id y points[]" });
-  }
-  try {
-    const params = [];
-    const values = points.map((p, idx) => {
-      params.push(trip_id, p.lat, p.lon, p.acc ?? null, p.ts ?? null);
-      const base = idx * 5;
-      return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, COALESCE(to_timestamp($${base + 5}/1000.0), now()))`;
-    });
-    await pool.query(
-      `insert into trip_points(trip_id, lat, lon, accuracy, ts) values ${values.join(",")}`,
-      params
-    );
-    return res.json({ ok: true, inserted: points.length });
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ ok: false, error: "db error" });
-  }
-});
-
-app.post("/v1/agents/report-trip/end", async (req, res) => {
-  const { trip_id, end_ts, end_lat, end_lon } = req.body || {};
-  if (!trip_id) return res.status(400).json({ ok: false, error: "trip_id requerido" });
-  try {
-    await pool.query(
-      "update trips set end_ts = COALESCE(to_timestamp($2/1000.0), now()), end_lat=$3, end_lon=$4 where id=$1",
-      [trip_id, end_ts || null, end_lat || null, end_lon || null]
-    );
-    return res.json({ ok: true });
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ ok: false, error: "db error" });
-  }
-});
-
-app.get("/v1/parents/device/:id/trips", requireJWT, async (req, res) => {
-  const deviceId = String(req.params.id || "");
-  const { from, to, limit } = req.query;
-  try {
-    const r = await pool.query(
-      `
-      SELECT id,
-             extract(epoch from start_ts)*1000 as start_ts,
-             extract(epoch from end_ts)*1000   as end_ts,
-             start_lat, start_lon, end_lat, end_lon
-      FROM trips
-      WHERE device_id=$1
-        AND ($2::timestamptz IS NULL OR start_ts >= $2)
-        AND ($3::timestamptz IS NULL OR start_ts <  $3)
-      ORDER BY id DESC
-      LIMIT ${Number(limit) || 50}
-      `,
-      [deviceId, from ? new Date(Number(from)) : null, to ? new Date(Number(to)) : null]
-    );
-    return res.json({ ok: true, trips: r.rows });
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ ok: false, error: "db error" });
-  }
-});
-
-app.post("/v1/agents/report-tamper", async (req, res) => {
-  const { device_id, reason, details, ts } = req.body || {};
-  if (!device_id || !reason) return res.status(400).json({ ok: false, error: "device_id y reason" });
-  try {
-    await pool.query(
-      "insert into tamper_reports(device_id, reason, details, ts) values ($1,$2,$3, COALESCE(to_timestamp($4/1000.0), now()))",
-      [String(device_id), String(reason), details ? JSON.stringify(details) : null, ts || null]
-    );
-    return res.json({ ok: true });
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ ok: false, error: "db error" });
-  }
-});
-
-app.post("/v1/parents/device/:id/app-rules", requireJWT, async (req, res) => {
-  const deviceId = String(req.params.id || "");
-  const { blockedPackages = [], schedules = [] } = req.body || {};
-  try {
-    await pool.query("delete from app_rules where device_id=$1", [deviceId]);
-    for (const pkg of blockedPackages) {
-      await pool.query("insert into app_rules(device_id, package_name, blocked) values ($1,$2,true)", [
-        deviceId,
-        String(pkg),
-      ]);
-    }
-    for (const s of schedules) {
-      await pool.query(
-        "insert into app_rules(device_id, package_name, blocked, start_minute, end_minute, days_mask) values ($1,$2,false,$3,$4,$5)",
-        [deviceId, String(s.package_name), Number(s.start_minute), Number(s.end_minute), Number(s.days_mask ?? 127)]
-      );
-    }
-    return res.json({ ok: true });
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ ok: false, error: "db error" });
-  }
-});
-
-app.get("/v1/agents/device/:id/app-rules", async (req, res) => {
-  const deviceId = String(req.params.id || "");
-  try {
-    const r = await pool.query(
-      "select package_name, blocked, start_minute, end_minute, days_mask from app_rules where device_id=$1",
-      [deviceId]
-    );
-    return res.json({ ok: true, rules: r.rows });
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ ok: false, error: "db error" });
-  }
-});
-
-// 404 y errores
-app.use((req, res) =>
-  res.status(404).json({ ok: false, error: "No encontrado", path: req.originalUrl })
-);
-app.use((err, _req, res, _next) => {
-  console.error(err);
-  res.status(500).json({ ok: false, error: "Server error" });
-});
-
-// Start
-app.listen(PORT, "0.0.0.0", () => {
-  console.log("ApagaNet API ready on :" + PORT);
-});
-
-process.on("unhandledRejection", (e) => console.error("unhandledRejection:", e));
-process.on("uncaughtException", (e) => console.error("uncaughtException:", e));
+app.listen(PORT, "0.0.0.0", () => console.log("ApagaNet API ready on :" + PORT));
