@@ -1,0 +1,3 @@
+-- db/migrations/001_init.sql
+-- Same schema as in migrate.js (kept here for reference or manual runs)
+-- (Content intentionally mirrored; see scripts/migrate.js)
