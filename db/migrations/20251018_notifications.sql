@@ -1,5 +1,7 @@
-
 -- db/migrations/20251018_notifications.sql
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
 CREATE TABLE IF NOT EXISTS notification_subscriptions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID,
@@ -12,6 +14,11 @@ CREATE TABLE IF NOT EXISTS notification_subscriptions (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
 CREATE UNIQUE INDEX IF NOT EXISTS ux_subs_user_channel_addr
-  ON notification_subscriptions (COALESCE(user_id, '00000000-0000-0000-0000-000000000000'::uuid), channel, address);
+  ON notification_subscriptions (
+    COALESCE(user_id, '00000000-0000-0000-0000-000000000000'::uuid),
+    channel, address
+  );
+
 CREATE INDEX IF NOT EXISTS ix_subs_channel ON notification_subscriptions (channel);
