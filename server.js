@@ -9,31 +9,34 @@ import morgan from "morgan";
 import rateLimit from "express-rate-limit";
 import compression from "compression";
 import jwt from "jsonwebtoken";
-import bcrypt from "bcryptjs"; // (ya usado en otras rutas)
+import bcrypt from "bcryptjs"; // usado en otras rutas
 import crypto from "node:crypto";
 import { pool } from "./src/lib/db.js";
 
-// Routers existentes
+// ---------------- Routers existentes ----------------
 import auth from "./src/routes/auth.js";
 import devices from "./src/routes/devices.js";
 import schedules from "./src/routes/schedules.js";
 import agents from "./src/routes/agents.js";
 import admin from "./src/routes/admin.js";
-import alerts from "./src/routes/alerts.js";              // si le falta POST /alerts, lo cubre el fallback
+import alerts from "./src/routes/alerts.js";            // si falta POST /alerts, lo cubre el fallback
 import mockRouter from "./src/routes/mockRouter.js";
 import alertsSystem from "./src/routes/alerts-system.js";
 
-// ✅ Router de notificaciones PRO (suscripciones + dispatch)
-import notificationsPro from "./src/routes/notifications.pro.js";
+// ✅ Notificaciones PRO (suscripciones + dispatch)
+import notificationsProModule from "./src/routes/notifications.pro.js";
+const notificationsPro = notificationsProModule.default || notificationsProModule;
 
-// ✅ SMTP Phase 3 (router admin con TASK_SECRET)
-import emailRouter from "./routes/email.js";              // tu router ESM (o CJS compatible)
+// ✅ SMTP Phase 3 (admin por TASK_SECRET) — compat CJS/ESM
+import emailRouterModule from "./src/routes/email.js";   // <-- OJO: dentro de src
+const emailRouter = emailRouterModule.default || emailRouterModule;
 
+// ----------------------------------------------------
 const app = express();
 const PORT = Number(process.env.PORT) || 10000;
 const VERSION = process.env.VERSION || "0.6.0";
 
-// --- CORS ------------------------------------------------------------
+// ========== CORS ====================================================
 const ORIGINS = [
   ...((process.env.CORS_ORIGINS || "")
     .split(/[\s,]+/)
@@ -45,15 +48,18 @@ const ORIGINS = [
 
 app.set("trust proxy", 1);
 app.disable("x-powered-by");
+
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
+    // por si sirves fonts/imágenes embebidas desde Netlify:
+    crossOriginEmbedderPolicy: false,
   })
 );
 
 const corsOptions = {
   origin(origin, cb) {
-    if (!origin) return cb(null, true);     // Postman/cURL
+    if (!origin) return cb(null, true); // Postman/cURL
     if (ORIGINS.includes(origin)) return cb(null, true);
     return cb(new Error("CORS: Origin not allowed"));
   },
@@ -69,18 +75,22 @@ const corsOptions = {
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   maxAge: 86400,
 };
-app.use((req, res, next) => { res.setHeader("Vary", "Origin"); next(); });
+app.use((req, res, next) => {
+  res.setHeader("Vary", "Origin");
+  next();
+});
 app.use(cors(corsOptions));
-app.options("*", cors(corsOptions)); // preflight
+// preflight para todo
+app.options("*", cors(corsOptions));
 
-// --- Body / compresión / logs / rate-limit --------------------------
+// ========== Body / compresión / logs / rate-limit ===================
 app.use(express.json({ limit: "1mb" }));
-// Manejo de JSON malformado del body-parser
+// Manejo explícito de JSON malformado (tiene que tener 4 args)
 app.use((err, _req, res, next) => {
   if (err?.type === "entity.parse.failed") {
     return res.status(400).json({ ok: false, error: "Invalid JSON" });
   }
-  next(err);
+  return next(err);
 });
 
 app.use(compression());
@@ -91,41 +101,47 @@ app.use(
     max: 200,
     standardHeaders: true,
     legacyHeaders: false,
+    keyGenerator: (req) => req.ip, // confiable por trust proxy
   })
 );
 
-// --- Helpers ---------------------------------------------------------
+// ========== Helpers =================================================
 function requireJWT(req, res, next) {
   const h = req.headers.authorization || "";
   const token = h.startsWith("Bearer ") ? h.slice(7) : null;
   if (!token) return res.status(401).json({ ok: false, error: "No token" });
   try {
     req.user = jwt.verify(token, process.env.JWT_SECRET || "dev-secret");
-    next();
+    return next();
   } catch {
     return res.status(401).json({ ok: false, error: "Invalid token" });
   }
 }
 
-/** Admin con TASK_SECRET:
+/** Admin con TASK_SECRET
  *  Authorization: Bearer <TASK_SECRET>  o  header: x-task-secret: <TASK_SECRET>
  */
 function requireTaskSecret(req, res, next) {
   const expected = (process.env.TASK_SECRET || "").trim();
   if (!expected) {
-    return res.status(500).json({ ok: false, error: "TASK_SECRET no configurado" });
+    return res
+      .status(500)
+      .json({ ok: false, error: "TASK_SECRET no configurado" });
   }
   const h = req.headers.authorization || "";
   const bearer = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
   const headerAlt = (req.headers["x-task-secret"] || "").toString().trim();
   const provided = bearer || headerAlt;
   if (!provided) {
-    return res.status(401).json({ ok: false, error: "Falta credencial admin (Bearer o x-task-secret)" });
+    return res.status(401).json({
+      ok: false,
+      error: "Falta credencial admin (Bearer o x-task-secret)",
+    });
   }
   if (provided !== expected) {
     return res.status(401).json({ ok: false, error: "TASK_SECRET inválido" });
   }
-  next();
+  return next();
 }
 
 async function dbPing() {
@@ -133,7 +149,7 @@ async function dbPing() {
   return { ok: r.rows?.[0]?.ok === 1 };
 }
 
-// --- Health ----------------------------------------------------------
+// ========== Health ==================================================
 app.head("/", (_req, res) => res.status(200).end());
 app.get("/", (_req, res) => res.send("ApagaNet API OK"));
 app.get("/ping", async (_req, res) => {
@@ -146,7 +162,7 @@ app.get("/ping", async (_req, res) => {
 });
 app.get("/api/ping", (_req, res) => res.redirect(307, "/ping"));
 
-// --- Rutas demo ------------------------------------------------------
+// ========== Rutas demo ==============================================
 app.get("/agents/modem-compat", async (req, res) => {
   const agent_id = String(req.query.agent_id || "");
   const report = {
@@ -160,11 +176,13 @@ app.get("/agents/modem-compat", async (req, res) => {
       "insert into reports(id, agent_id, created_at) values ($1,$2, now())",
       [report.id, agent_id]
     );
-  } catch {}
+  } catch {
+    // no romper demo por error de DB
+  }
   res.json({ ok: true, report, fallback: false });
 });
 
-// --- Rutas existentes + aliases /api --------------------------------
+// ========== Rutas + aliases /api ====================================
 app.use("/auth", auth);
 app.use("/api/auth", auth);
 
@@ -208,8 +226,7 @@ app.use("/alerts", requireTaskSecret, alertsSystem);
 // === SMTP Phase 3: /api/email y /email ==============================
 // Mapea x-task-secret / Bearer -> x-admin-secret (compat con routes/email.js)
 app.use((req, _res, next) => {
-  const hasAdmin = req.headers["x-admin-secret"];
-  if (!hasAdmin) {
+  if (!req.headers["x-admin-secret"]) {
     const bearer = (req.headers.authorization || "").startsWith("Bearer ")
       ? req.headers.authorization.slice(7).trim()
       : "";
@@ -234,7 +251,10 @@ app.post("/api/v1/alerts", requireJWT, async (req, res) => {
       details_url,
       device_name,
     } = req.body || {};
-    if (!device_id) return res.status(400).json({ ok: false, error: "Missing device_id" });
+    if (!device_id)
+      return res
+        .status(400)
+        .json({ ok: false, error: "Missing device_id" });
 
     const payload = {
       title,
@@ -245,7 +265,10 @@ app.post("/api/v1/alerts", requireJWT, async (req, res) => {
     };
 
     const to = req.user?.email;
-    if (!to) return res.status(400).json({ ok: false, error: "User email not found in token" });
+    if (!to)
+      return res
+        .status(400)
+        .json({ ok: false, error: "User email not found in token" });
 
     // Intentar outbox+dedupe si existe
     let enqueued = false;
@@ -266,10 +289,11 @@ app.post("/api/v1/alerts", requireJWT, async (req, res) => {
         });
         enqueued = true;
       }
-    } catch {}
+    } catch {
+      // si no existe emailQueue, pasamos a envío directo
+    }
 
     if (!enqueued) {
-      // Envío directo con tu mailer (sin outbox)
       const mailerPkg = await import("./email/mailer.js");
       const { sendAlertEmail } = mailerPkg.default || mailerPkg;
       await sendAlertEmail(to, payload);
@@ -281,16 +305,26 @@ app.post("/api/v1/alerts", requireJWT, async (req, res) => {
   }
 });
 
-// --- 404 y errores ---------------------------------------------------
+// ========== 404 y errores ===========================================
 app.use((req, res) =>
-  res.status(404).json({ ok: false, error: "No encontrado", path: req.originalUrl })
+  res
+    .status(404)
+    .json({ ok: false, error: "No encontrado", path: req.originalUrl })
 );
 app.use((err, _req, res, _next) => {
   console.error(err);
   res.status(500).json({ ok: false, error: "Server error" });
 });
 
-// --- Start -----------------------------------------------------------
+// ========== Start ====================================================
 app.listen(PORT, "0.0.0.0", () => {
-  console.log("ApagaNet API ready on :" + PORT);
+  console.log("ApagaNet API ready on :" + PORT, "version:", VERSION);
+});
+
+// (opcional) logging de promesas no manejadas para diagnósticos
+process.on("unhandledRejection", (err) => {
+  console.error("[unhandledRejection]", err);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[uncaughtException]", err);
 });
