@@ -1,86 +1,76 @@
-/**
- * routes/email.js (CommonJS)
- * Admin endpoints to verify/test SMTP and send an alert demo.
- * Protects with TASK_SECRET via x-admin-secret | x-task-secret | Authorization: Bearer
- */
-const express = require('express');
+// routes/email.js (ESM)
+// Admin endpoints to verify and test SMTP, and to demo an alert email.
+// Protect with TASK_SECRET compatible header: x-admin-secret (o Bearer/x-task-secret via mapping en server.js)
+
+import express from "express";
+import mailerPkg from "../email/mailer.js";
+
+const { verify, sendTest, sendAlertEmail } = mailerPkg.default || mailerPkg;
 const router = express.Router();
-const { verify, sendTest, sendAlertEmail } = require('../email/mailer');
-
-// Ensure JSON body for safety if parent app didn't add it (harmless if duplicated)
-router.use(express.json({ limit: '1mb' }));
-
-function readAdminSecret(req) {
-  const bearer = (req.headers.authorization || '').startsWith('Bearer ')
-    ? req.headers.authorization.slice(7)
-    : '';
-  const h1 = req.get('x-admin-secret') || '';
-  const h2 = req.get('x-task-secret') || '';
-  // Trim all
-  return (bearer || h1 || h2).toString().trim();
-}
 
 function requireAdmin(req, res, next) {
-  const expected = (process.env.TASK_SECRET || '').toString().trim();
+  const expected = (process.env.TASK_SECRET || "").trim();
+  const provided =
+    (req.get("x-admin-secret") || "").trim() ||
+    (req.get("x-task-secret") || "").trim() ||
+    (() => {
+      const h = req.get("authorization") || "";
+      return h.startsWith("Bearer ") ? h.slice(7).trim() : "";
+    })();
+
   if (!expected) {
-    return res.status(500).json({ ok: false, error: 'TASK_SECRET no configurado' });
+    return res.status(500).json({ ok: false, error: "TASK_SECRET no configurado" });
   }
-  const provided = readAdminSecret(req);
-  if (!provided) {
-    return res.status(401).json({ ok: false, error: 'Falta credencial admin (x-admin-secret / x-task-secret / Bearer)' });
+  if (!provided || provided !== expected) {
+    return res.status(401).json({ ok: false, error: "unauthorized" });
   }
-  if (provided !== expected) {
-    return res.status(401).json({ ok: false, error: 'TASK_SECRET inválido' });
-  }
-  return next();
+  next();
 }
 
-// Opcional: rápida respuesta a preflight CORS si llega directo aquí
-router.options('*', (_req, res) => res.status(204).end());
-
-router.get('/verify', requireAdmin, async (_req, res) => {
+// OJO: server.js monta en /api/email y /email
+// Aquí las rutas internas son /verify, /test y /alert-demo
+router.get("/verify", requireAdmin, async (_req, res) => {
   try {
-    const info = await verify(); // nodemailer.verify()
-    res.json({ ok: true, info });
+    const ok = await verify();
+    res.json({ ok: true, info: ok });
   } catch (e) {
     res.status(500).json({ ok: false, error: e?.message || String(e) });
   }
 });
 
-router.post('/test', requireAdmin, async (req, res) => {
+router.post("/test", requireAdmin, async (req, res) => {
   const { to } = req.body || {};
-  if (!to) return res.status(400).json({ ok: false, error: 'Missing "to"' });
+  if (!to) return res.status(400).json({ ok: false, error: "Missing to" });
   try {
     const info = await sendTest(to);
-    res.json({ ok: true, id: info?.messageId || null });
+    res.json({ ok: true, id: info?.messageId });
   } catch (e) {
     res.status(500).json({ ok: false, error: e?.message || String(e) });
   }
 });
 
-router.post('/alert-demo', requireAdmin, async (req, res) => {
+router.post("/alert-demo", requireAdmin, async (req, res) => {
   const {
     to,
     title,
-    level = 'warning',
-    deviceName = 'Dispositivo',
+    level = "warning",
+    deviceName = "Dispositivo",
     timeISO = new Date().toISOString(),
-    detailsUrl = 'https://apaganet.example/app/alerts/1',
+    detailsUrl = "https://apaganet.example/app/alerts/1",
   } = req.body || {};
-  if (!to) return res.status(400).json({ ok: false, error: 'Missing "to"' });
+  if (!to) return res.status(400).json({ ok: false, error: "Missing to" });
   try {
-    const payload = {
-      title: title || 'Actividad inusual detectada',
+    const info = await sendAlertEmail(to, {
+      title: title || "Actividad inusual detectada",
       level,
       deviceName,
       timeISO,
       detailsUrl,
-    };
-    const info = await sendAlertEmail(to, payload);
-    res.json({ ok: true, id: info?.messageId || null });
+    });
+    res.json({ ok: true, id: info?.messageId });
   } catch (e) {
     res.status(500).json({ ok: false, error: e?.message || String(e) });
   }
 });
 
-module.exports = router;
+export default router;
