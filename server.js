@@ -1,330 +1,165 @@
-// server.js (ESM) — ApagaNet API (Phase 3, refactor + fixes + email test)
+import express from 'express';
+import cors from 'cors';
+import morgan from 'morgan';
+import dotenv from 'dotenv';
+import jwt from 'jsonwebtoken';
+import { customAlphabet } from 'nanoid';
 
-import "dotenv/config";
-import express from "express";
-import cors from "cors";
-import helmet from "helmet";
-import morgan from "morgan";
-import rateLimit from "express-rate-limit";
-import compression from "compression";
-import jwt from "jsonwebtoken";
-import bcrypt from "bcryptjs"; // usado en otras rutas
-import crypto from "node:crypto";
-import { pool } from "./src/lib/db.js";
-
-// Routers existentes
-import auth from "./src/routes/auth.js";
-import devices from "./src/routes/devices.js";
-import schedules from "./src/routes/schedules.js";
-import agents from "./src/routes/agents.js";
-import admin from "./src/routes/admin.js";
-import alerts from "./src/routes/alerts.js";
-import mockRouter from "./src/routes/mockRouter.js";
-import alertsSystem from "./src/routes/alerts-system.js";
-
-// Notificaciones PRO
-import subscriptionsRouter from "./src/routes/subscriptions.js";
-import dispatchRouter from "./src/routes/dispatch.js";
-
-// SMTP Phase 3 (admin por TASK_SECRET)
-import emailRouterModule from "./src/routes/email.js";
-const emailRouter = emailRouterModule?.default || emailRouterModule;
-
-// Mailer real opcional (Nodemailer)
-let mailer = null;
-try {
-  const mailerModule = await import("./email/mailer.js");
-  mailer = mailerModule.default || mailerModule;
-} catch {
-  // sin mailer real: /api/email/test responderá 503 "Mailer no disponible"
-}
-
+dotenv.config();
 const app = express();
-const PORT = Number(process.env.PORT) || 10000;
-const VERSION = process.env.VERSION || "0.6.0";
+app.use(express.json());
+app.use(morgan('dev'));
 
-// ========================== CORS ====================================
-const ORIGINS = [
-  ...((process.env.CORS_ORIGINS || "")
-    .split(/[\s,]+/)
-    .map((s) => s.trim())
-    .filter(Boolean)),
-  "http://localhost:3000",
-  "http://localhost:5173",
-].filter(Boolean);
-
-app.set("trust proxy", 1);
-app.disable("x-powered-by");
-
-app.use(
-  helmet({
-    crossOriginResourcePolicy: { policy: "cross-origin" },
-    crossOriginEmbedderPolicy: false,
-  })
-);
-
-const corsOptions = {
-  origin(origin, cb) {
-    // Permite curl/Postman (sin Origin) y orígenes whitelisted
-    if (!origin) return cb(null, true);
-    if (ORIGINS.includes(origin)) return cb(null, true);
-    return cb(new Error("CORS_ORIGIN_NOT_ALLOWED"));
+// CORS
+const allowed = process.env.ALLOWED_ORIGINS ? JSON.parse(process.env.ALLOWED_ORIGINS) : ["*"];
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin || allowed.includes("*") || allowed.includes(origin)) return cb(null, true);
+    return cb(new Error("CORS: Origin not allowed: " + origin));
   },
-  credentials: true,
-  allowedHeaders: [
-    "Content-Type",
-    "Authorization",
-    "x-apaganet-token",
-    "x-task-secret",
-    "x-admin-secret",
-    "Idempotency-Key",
-  ],
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  maxAge: 86400,
+  credentials: true
+}));
+
+// Demo in-memory stores
+const state = {
+  homes: new Map(),   // homeId -> { devices: Map(mac -> device), modem, alerts: [] }
+  actions: []         // queued actions for agents
 };
+const nanoid = customAlphabet('1234567890abcdefghijklmnopqrstuvwxyz', 10);
 
-// Vary para caches/CDN
-app.use((_, res, next) => {
-  res.setHeader("Vary", "Origin");
-  next();
-});
+const JWT_SECRET = process.env.JWT_SECRET || 'demo_jwt_secret_change_me';
+const TASK_SECRET = process.env.TASK_SECRET || 'demo_task_secret_change_me';
 
-// CORS con respuesta JSON si no pasa
-app.use((req, res, next) => {
-  cors(corsOptions)(req, res, (err) => {
-    if (!err) return next();
-    return res
-      .status(403)
-      .json({ ok: false, error: "CORS: Origin not allowed", origin: req.headers.origin || null });
-  });
-});
-app.options("*", cors(corsOptions));
-
-// ================== Body / compresión / logs / rate =================
-app.use(express.json({ limit: "1mb" }));
-
-// Manejo explícito de JSON malformado (4 args)
-app.use((err, _req, res, next) => {
-  if (err?.type === "entity.parse.failed") {
-    return res.status(400).json({ ok: false, error: "Invalid JSON" });
+function ensureHome(homeId) {
+  if (!state.homes.has(homeId)) {
+    state.homes.set(homeId, { devices: new Map(), modem: null, alerts: [] });
   }
-  return next(err);
-});
+  return state.homes.get(homeId);
+}
 
-app.use(compression());
-app.use(morgan("dev"));
-app.use(
-  rateLimit({
-    windowMs: 60_000,
-    max: 200,
-    standardHeaders: true,
-    legacyHeaders: false,
-    keyGenerator: (req) => req.ip,
-  })
-);
+function authTask(req, res, next) {
+  const header = req.get('x-task-secret');
+  if (header && header === TASK_SECRET) return next();
+  res.status(401).json({ error: 'Unauthorized (task)' });
+}
 
-// ============================ Helpers ===============================
-export function requireJWT(req, res, next) {
-  const h = req.headers.authorization || "";
-  const token = h.startsWith("Bearer ") ? h.slice(7) : null;
-  if (!token) return res.status(401).json({ ok: false, error: "No token" });
+function authJWT(req, res, next) {
+  const auth = req.get('authorization');
+  if (!auth?.startsWith('Bearer ')) return res.status(401).json({ error: 'Missing bearer token' });
   try {
-    req.user = jwt.verify(token, process.env.JWT_SECRET || "dev-secret");
-    return next();
-  } catch {
-    return res.status(401).json({ ok: false, error: "Invalid token" });
-  }
-}
-
-/** Admin con TASK_SECRET — rotación segura
- *  Authorization: Bearer <TASK_SECRET>  o  header: x-task-secret: <TASK_SECRET>
- *  Acepta:
- *    - TASK_SECRET (principal)
- *    - TASK_SECRETS (opcional, coma-separados para transición)
- */
-export function requireTaskSecret(req, res, next) {
-  const primary = (process.env.TASK_SECRET || "").trim();
-  const extras = (process.env.TASK_SECRETS || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  const allowed = [primary, ...extras].filter(Boolean);
-  if (allowed.length === 0) {
-    return res.status(500).json({ ok: false, error: "TASK_SECRET no configurado" });
-  }
-
-  const h = req.headers.authorization || "";
-  const bearer = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
-  const headerAlt = (req.headers["x-task-secret"] || "").toString().trim();
-  const provided = bearer || headerAlt;
-
-  if (!provided) {
-    return res
-      .status(401)
-      .json({ ok: false, error: "Falta credencial admin (Bearer o x-task-secret)" });
-  }
-  if (!allowed.includes(provided)) {
-    return res.status(401).json({ ok: false, error: "TASK_SECRET inválido" });
-  }
-  return next();
-}
-
-async function dbPing() {
-  const r = await pool.query("select 1 as ok");
-  return { ok: r.rows?.[0]?.ok === 1 };
-}
-
-// ========================== Health/Ping =============================
-app.head("/", (_req, res) => res.status(200).end());
-app.get("/", (_req, res) => res.send("ApagaNet API OK"));
-
-app.get("/ping", async (_req, res) => {
-  try {
-    const r = await dbPing();
-    res.json({ ok: true, db: r.ok, version: VERSION });
+    const token = auth.slice(7);
+    const payload = jwt.verify(token, JWT_SECRET);
+    req.user = payload;
+    next();
   } catch (e) {
-    res.status(500).json({ ok: false, error: String(e) });
+    res.status(401).json({ error: 'Invalid token' });
   }
-});
-app.get("/api/ping", (_req, res) => res.redirect(307, "/ping"));
-
-app.get("/api/health", async (_req, res) => {
-  let db = false;
-  try {
-    db = !!(await dbPing()).ok;
-  } catch {}
-  res.status(200).json({ ok: true, db, version: VERSION, time: new Date().toISOString() });
-});
-
-app.get("/api/diag", (_req, res) => {
-  res.status(200).json({
-    uptime: process.uptime(),
-    pid: process.pid,
-    memory: process.memoryUsage(),
-    node: process.version,
-    region: process.env.RENDER_REGION || null,
-  });
-});
-
-// ========================= Rutas demo ===============================
-app.get("/agents/modem-compat", async (req, res) => {
-  const agent_id = String(req.query.agent_id || "");
-  const report = {
-    id: crypto.randomUUID(),
-    agent_id,
-    devices: [],
-    created_at: new Date().toISOString(),
-  };
-  try {
-    await pool.query(
-      "insert into reports(id, agent_id, created_at) values ($1,$2, now())",
-      [report.id, agent_id]
-    );
-  } catch {
-    // no romper demo por error de DB
-  }
-  res.json({ ok: true, report, fallback: false });
-});
-
-// =================== Rutas + aliases /api ===========================
-app.use("/auth", auth);
-app.use("/api/auth", auth);
-
-app.use("/devices", requireJWT, devices);
-app.use("/api/devices", requireJWT, devices);
-
-app.use("/schedules", requireJWT, schedules);
-app.use("/api/schedules", requireJWT, schedules);
-
-// Montaje limpio (mock → real) en /agents y /api/agents
-app.use("/agents", mockRouter, agents);
-app.use("/api/agents", mockRouter, agents);
-
-// Mint JWT (DEV)
-app.get("/admin/jwt", requireTaskSecret, (req, res) => {
-  const id = (req.query.id || "u1").toString();
-  const email = (req.query.email || "demo@apaganet.test").toString();
-  const token = jwt.sign({ id, email }, process.env.JWT_SECRET || "dev-secret", {
-    expiresIn: "2h",
-  });
-  res.json({ ok: true, token, id, email });
-});
-
-// Admin + aliases
-app.use("/admin", requireTaskSecret, admin);
-app.use("/api/admin", requireTaskSecret, admin);
-
-// Notificaciones PRO
-app.use("/", (req, res, next) => subscriptionsRouter({ requireTaskSecret, pool })(req, res, next));
-app.use("/", (req, res, next) => dispatchRouter({ requireTaskSecret, pool })(req, res, next));
-
-// ALERTAS (JWT)
-app.use("/v1", requireJWT, alerts);
-app.use("/api/v1", requireJWT, alerts);
-
-// ALERTAS de sistema (agentes/cron) con TASK_SECRET
-app.use("/alerts", requireTaskSecret, alertsSystem);
-
-// === SMTP Phase 3: /api/email y /email ==============================
-// Mapea x-task-secret / Bearer -> x-admin-secret (compat con routes/email.js)
-app.use((req, _res, next) => {
-  if (!req.headers["x-admin-secret"]) {
-    const bearer = (req.headers.authorization || "").startsWith("Bearer ")
-      ? req.headers.authorization.slice(7).trim()
-      : "";
-    const task = (req.headers["x-task-secret"] || "").toString().trim();
-    const provided = bearer || task;
-    if (provided) req.headers["x-admin-secret"] = provided;
-  }
-  next();
-});
-if (emailRouter) {
-  app.use("/api/email", emailRouter);
-  app.use("/email", emailRouter);
-  console.log("[email] Mounted at /api/email and /email");
 }
 
-// === Endpoint de prueba SMTP (TASK_SECRET) ==========================
-app.post("/api/email/test", requireTaskSecret, async (req, res) => {
-  try {
-    const { to, title = "Test SMTP", message = "Hola desde ApagaNet", level = "info" } =
-      req.body || {};
-    if (!to) return res.status(400).json({ ok: false, error: "Falta 'to'" });
-    if (!mailer?.sendAlertEmail) {
-      return res.status(503).json({ ok: false, error: "Mailer no disponible (sendAlertEmail)" });
-    }
-
-    // Payload mínimo para tu plantilla de alertas
-    const payload = {
-      title,
-      level,
-      deviceName: "SMTP-Test",
-      timeISO: new Date().toISOString(),
-      detailsUrl: "",
-      message,
-    };
-
-    const info = await mailer.sendAlertEmail(to, payload);
-    return res.status(201).json({ ok: true, messageId: info?.messageId || null });
-  } catch (e) {
-    return res.status(500).json({ ok: false, error: e?.message || String(e) });
-  }
+// Issue a demo admin token (no users/db for this demo)
+app.post('/auth/demo-token', (req, res) => {
+  const { homeId = 'HOME-DEMO-1' } = req.body || {};
+  const token = jwt.sign({ role: 'admin', homeId }, JWT_SECRET, { expiresIn: '2h' });
+  res.json({ token, homeId });
 });
 
-// ========== 404 y errores ===========================================
-app.use((req, res) =>
-  res.status(404).json({ ok: false, error: "No encontrado", path: req.originalUrl })
-);
-app.use((err, _req, res, _next) => {
-  console.error(err);
-  res.status(500).json({ ok: false, error: "Server error" });
+// Health
+app.get(['/','/api/health','/api/ping'], (req, res) => {
+  res.json({ ok: true, time: new Date().toISOString(), service: 'ApagaNet Demo Backend' });
 });
 
-// ========== Start ====================================================
-app.listen(PORT, "0.0.0.0", () =>
-  console.log("ApagaNet API ready on :" + PORT, "version:", VERSION)
-);
+// Agent reports devices + modem
+app.post('/agents/report', authTask, (req, res) => {
+  const { homeId, devices = [], modem = null } = req.body || {};
+  if (!homeId) return res.status(400).json({ error: 'homeId required' });
+  const home = ensureHome(homeId);
+  if (modem) home.modem = modem;
+  const now = Date.now();
+  devices.forEach(d => {
+    const mac = (d.mac || '').toUpperCase();
+    if (!mac) return;
+    const prev = home.devices.get(mac) || {};
+    home.devices.set(mac, {
+      mac,
+      ip: d.ip || prev.ip || null,
+      name: d.name || prev.name || 'Unknown',
+      online: typeof d.online === 'boolean' ? d.online : true,
+      lastSeen: now,
+      pausedUntil: prev.pausedUntil || 0
+    });
+  });
+  return res.json({ ok: true, deviceCount: home.devices.size });
+});
 
-process.on("unhandledRejection", (err) => console.error("[unhandledRejection]", err));
-process.on("uncaughtException", (err) => console.error("[uncaughtException]", err));
+// Agent polls actions
+app.get('/agents/next-actions', authTask, (req, res) => {
+  const { homeId } = req.query;
+  if (!homeId) return res.status(400).json({ error: 'homeId required' });
+  const out = state.actions.filter(a => a.homeId === homeId);
+  // Empty queue after delivering (demo behavior)
+  state.actions = state.actions.filter(a => a.homeId !== homeId);
+  res.json({ actions: out });
+});
+
+// List devices for dashboard (admin)
+app.get('/devices', authJWT, (req, res) => {
+  const homeId = req.user.homeId;
+  const home = ensureHome(homeId);
+  const devices = Array.from(home.devices.values()).sort((a,b) => b.lastSeen - a.lastSeen);
+  res.json({ devices });
+});
+
+// Issue "pause internet" action and create alert
+app.post('/control/pause', authJWT, (req, res) => {
+  const homeId = req.user.homeId;
+  const { mac, minutes = 15 } = req.body || {};
+  if (!mac) return res.status(400).json({ error: 'mac required' });
+  const home = ensureHome(homeId);
+  const dev = home.devices.get(mac.toUpperCase());
+  if (!dev) return res.status(404).json({ error: 'device not found' });
+  const until = Date.now() + minutes*60*1000;
+  dev.pausedUntil = until;
+  // Queue action for agent (router)
+  state.actions.push({ id: nanoid(), homeId, kind: 'PAUSE', mac: dev.mac, until });
+  // Create alert
+  const alert = { id: nanoid(), homeId, type: 'pause', message: `Internet pausado para ${dev.name} (${dev.mac}) por ${minutes} min`, createdAt: Date.now(), read: false };
+  home.alerts.unshift(alert);
+  res.json({ ok: true, actionQueued: true, alert });
+});
+
+// Alerts (list & mark read) - admin
+app.get('/alerts', authJWT, (req, res) => {
+  const homeId = req.user.homeId;
+  const home = ensureHome(homeId);
+  res.json({ alerts: home.alerts });
+});
+app.patch('/alerts/:id/read', authJWT, (req, res) => {
+  const homeId = req.user.homeId;
+  const { id } = req.params;
+  const home = ensureHome(homeId);
+  const a = home.alerts.find(x => x.id === id);
+  if (!a) return res.status(404).json({ error: 'not found' });
+  a.read = true;
+  res.json({ ok: true });
+});
+
+// A tiny seeded scenario for immediate demo
+function seed() {
+  const homeId = 'HOME-DEMO-1';
+  const home = ensureHome(homeId);
+  const now = Date.now();
+  const sample = [
+    { mac:'AA:BB:CC:11:22:33', ip:'192.168.0.10', name:'Tablet de Diego', online:true },
+    { mac:'DE:AD:BE:EF:00:01', ip:'192.168.0.11', name:'Nintendo Switch', online:true },
+    { mac:'CA:FE:BA:BE:12:34', ip:'192.168.0.12', name:'Laptop Mamá', online:true }
+  ];
+  sample.forEach(d => home.devices.set(d.mac, { ...d, lastSeen: now, pausedUntil: 0 }));
+  home.modem = { brand:'TP-Link', model:'Archer AX50' };
+  home.alerts = [ { id: nanoid(), homeId, type:'info', message:'Demo lista — conecta el agente cuando quieras.', createdAt: now, read:false } ];
+}
+seed();
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log('ApagaNet Demo Backend listening on :' + PORT);
+});
