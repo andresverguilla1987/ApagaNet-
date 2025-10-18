@@ -1,7 +1,20 @@
 {
-  "name": "apaganet-backend-phase1",
-  "version": "0.1.0",
+  "name": "apaganet-backend",
+  "version": "0.6.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18.17"
+  },
   "scripts": {
-    "migrate:phase1": "psql \"$DATABASE_URL\" -f scripts/migrate_phase1.sql"
+    "start": "node server.js",
+    "start:prod": "node server.js",
+    "dev": "node --watch server.js",
+
+    "migrate:phase1": "psql \"$DATABASE_URL\" -f scripts/migrate_phase1.sql",
+    "migrate:notifications": "psql \"$DATABASE_URL\" -f db/migrations/20251018_notifications.sql",
+    "migrate:all": "npm run migrate:phase1 && npm run migrate:notifications",
+
+    "lint": "echo \"(lint placeholder)\""
   }
 }
