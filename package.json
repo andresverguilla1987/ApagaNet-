@@ -12,9 +12,26 @@
     "dev": "node --watch server.js",
 
     "migrate:phase1": "psql \"$DATABASE_URL\" -f scripts/migrate_phase1.sql",
-    "migrate:notifications": "psql \"$DATABASE_URL\" -f db/migrations/20251018_notifications.sql",
-    "migrate:all": "npm run migrate:phase1 && npm run migrate:notifications",
+
+    "migrate:notifications:ext": "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS pgcrypto;' && psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";'",
+    "migrate:notifications": "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f db/migrations/20251018_notifications.sql",
+    "seed:notifications": "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f scripts/seed_notifications.sql",
+
+    "migrate:all": "npm run migrate:phase1 && npm run migrate:notifications:ext && npm run migrate:notifications",
 
     "lint": "echo \"(lint placeholder)\""
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "compression": "^1.7.4",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.1.5",
+    "helmet": "^7.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.0",
+    "nodemailer": "^6.9.13",
+    "pg": "^8.11.5"
   }
 }
