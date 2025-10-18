@@ -1,36 +1,10 @@
 {
   "name": "apaganet-backend",
   "version": "0.6.0",
-  "private": true,
-  "description": "ApagaNet backend (SMTP Phase 3 + Notifications)",
-  "license": "UNLICENSED",
   "type": "module",
-  "engines": {
-    "node": ">=18.17"
-  },
+  "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "start:prod": "node server.js",
-    "dev": "node --watch server.js",
-
-    "// ---------- DB: Fase 1 ----------": "", 
-    "migrate:phase1": "psql \"$DATABASE_URL\" -f scripts/migrate_phase1.sql",
-
-    "// ---------- DB: Notifications ----------": "",
-    "migrate:notifications:ext": "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS pgcrypto;' && psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";'",
-    "migrate:notifications": "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f db/migrations/20251018_notifications.sql",
-    "seed:notifications": "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f scripts/seed_notifications.sql",
-    "migrate:all": "npm run migrate:phase1 && npm run migrate:notifications:ext && npm run migrate:notifications",
-
-    "// ---------- Utils ----------": "",
-    "check:env": "node -e \"const req=['PORT','JWT_SECRET','TASK_SECRET','SMTP_HOST','SMTP_PORT','SMTP_USER','SMTP_PASS'];const miss=req.filter(k=>!process.env[k]); if(miss.length){console.error('Faltan env:',miss.join(', ')); process.exit(1);} console.log('Env OK')\"",
-
-    "// ---------- Smokes (Node fetch nativo) ----------": "",
-    "smoke:alerts": "node -e \"(async()=>{const base=process.env.BASE||'https://apaganet-zmsa.onrender.com';const secret=process.env.TASK_SECRET;const email=process.env.SMOKE_EMAIL||'demo@apaganet.test';const id=process.env.SMOKE_USER_ID||'u1';if(!secret) throw new Error('TASK_SECRET requerido'); const hAdmin={'x-task-secret':secret}; const mint=await fetch(`${base}/admin/jwt?email=${encodeURIComponent(email)}&id=${encodeURIComponent(id)}`,{headers:hAdmin}); if(!mint.ok) throw new Error('mint fail '+mint.status); const {token}=await mint.json(); const head={'Authorization':'Bearer '+token,'Content-Type':'application/json'}; const body={device_id:'DEV-TEST',level:'critical',title:'Smoke test de alerta',details_url:(process.env.SMOKE_DETAILS_URL||'https://tu-frontend.netlify.app/alerts/smoke'),device_name:'Agent de prueba'}; const r=await fetch(`${base}/api/v1/alerts`,{method:'POST',headers:head,body:JSON.stringify(body)}); const j=await r.json().catch(()=>({})); if(!r.ok||!j.ok) throw new Error('alert fail '+r.status+' '+JSON.stringify(j)); console.log('OK alerta ->',j); })().catch(e=>{console.error(e);process.exit(1);})\"",
-
-    "smoke:dispatch": "node -e \"(async()=>{const base=process.env.BASE||'https://apaganet-zmsa.onrender.com';const secret=process.env.TASK_SECRET; if(!secret) throw new Error('TASK_SECRET requerido'); const head={'x-task-secret':secret,'Content-Type':'application/json'}; const note={title:'Actividad inusual detectada',level:'critical',body:'Intento de acceso desde IP desconocida',link:(process.env.SMOKE_DETAILS_URL||'https://tu-frontend.netlify.app/alerts/123'),filter:{byChannel:['email'],byLevels:['critical']}}; const r=await fetch(`${base}/admin/notifications/dispatch`,{method:'POST',headers:head,body:JSON.stringify(note)}); const j=await r.json().catch(()=>({})); if(!r.ok||j.delivered===0) throw new Error('dispatch fail '+r.status+' '+JSON.stringify(j)); console.log('OK dispatch ->',j); })().catch(e=>{console.error(e);process.exit(1);})\"",
-
-    "lint": "echo \"(lint placeholder)\""
+    "start": "node server.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -38,11 +12,10 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "express-rate-limit": "^7.1.5",
+    "express-rate-limit": "^7.2.0",
     "helmet": "^7.0.0",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
-    "nodemailer": "^6.9.13",
     "pg": "^8.11.5"
   }
 }
