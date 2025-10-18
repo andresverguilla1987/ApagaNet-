@@ -52,16 +52,15 @@ app.disable("x-powered-by");
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
-    // por si sirves fonts/imágenes embebidas desde Netlify:
     crossOriginEmbedderPolicy: false,
   })
 );
 
 const corsOptions = {
   origin(origin, cb) {
-    if (!origin) return cb(null, true); // Postman/cURL
+    if (!origin) return cb(null, true); // Postman/cURL/no CORS
     if (ORIGINS.includes(origin)) return cb(null, true);
-    return cb(new Error("CORS: Origin not allowed"));
+    return cb(new Error("CORS_ORIGIN_NOT_ALLOWED"));
   },
   credentials: true,
   allowedHeaders: [
@@ -75,17 +74,28 @@ const corsOptions = {
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   maxAge: 86400,
 };
+
+// añade Vary para caches/CDN
 app.use((req, res, next) => {
   res.setHeader("Vary", "Origin");
   next();
 });
-app.use(cors(corsOptions));
-// preflight para todo
+
+// CORS y preflight
+app.use((req, res, next) => {
+  cors(corsOptions)(req, res, (err) => {
+    if (!err) return next();
+    // Devuelve JSON claro cuando Origin no está permitido
+    return res
+      .status(403)
+      .json({ ok: false, error: "CORS: Origin not allowed", origin: req.headers.origin || null });
+  });
+});
 app.options("*", cors(corsOptions));
 
 // ========== Body / compresión / logs / rate-limit ===================
 app.use(express.json({ limit: "1mb" }));
-// Manejo explícito de JSON malformado (tiene que tener 4 args)
+// Manejo explícito de JSON malformado (middleware de 4 args)
 app.use((err, _req, res, next) => {
   if (err?.type === "entity.parse.failed") {
     return res.status(400).json({ ok: false, error: "Invalid JSON" });
@@ -101,7 +111,7 @@ app.use(
     max: 200,
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: (req) => req.ip, // confiable por trust proxy
+    keyGenerator: (req) => req.ip,
   })
 );
 
@@ -124,9 +134,7 @@ function requireJWT(req, res, next) {
 function requireTaskSecret(req, res, next) {
   const expected = (process.env.TASK_SECRET || "").trim();
   if (!expected) {
-    return res
-      .status(500)
-      .json({ ok: false, error: "TASK_SECRET no configurado" });
+    return res.status(500).json({ ok: false, error: "TASK_SECRET no configurado" });
   }
   const h = req.headers.authorization || "";
   const bearer = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
@@ -149,9 +157,12 @@ async function dbPing() {
   return { ok: r.rows?.[0]?.ok === 1 };
 }
 
-// ========== Health ==================================================
+// ========== Health / Ping ===========================================
+// Raíz
 app.head("/", (_req, res) => res.status(200).end());
 app.get("/", (_req, res) => res.send("ApagaNet API OK"));
+
+// Ping con DB
 app.get("/ping", async (_req, res) => {
   try {
     const r = await dbPing();
@@ -160,7 +171,34 @@ app.get("/ping", async (_req, res) => {
     res.status(500).json({ ok: false, error: String(e) });
   }
 });
+// Alias
 app.get("/api/ping", (_req, res) => res.redirect(307, "/ping"));
+
+// NUEVO: Health JSON (estable para monitores/smoke)
+app.get("/api/health", async (_req, res) => {
+  let db = false;
+  try {
+    const r = await dbPing();
+    db = !!r.ok;
+  } catch {}
+  res.status(200).json({
+    ok: true,
+    db,
+    version: VERSION,
+    time: new Date().toISOString(),
+  });
+});
+
+// NUEVO: Diag con métricas básicas
+app.get("/api/diag", (_req, res) => {
+  res.status(200).json({
+    uptime: process.uptime(),
+    pid: process.pid,
+    memory: process.memoryUsage(),
+    node: process.version,
+    region: process.env.RENDER_REGION || null,
+  });
+});
 
 // ========== Rutas demo ==============================================
 app.get("/agents/modem-compat", async (req, res) => {
@@ -239,7 +277,6 @@ app.use((req, _res, next) => {
 app.use("/api/email", emailRouter);
 app.use("/email", emailRouter);
 console.log("[email] Mounted at /api/email and /email");
-// ====================================================================
 
 // === Fallback: POST /api/v1/alerts (si tu router no lo expone) ======
 app.post("/api/v1/alerts", requireJWT, async (req, res) => {
@@ -252,9 +289,7 @@ app.post("/api/v1/alerts", requireJWT, async (req, res) => {
       device_name,
     } = req.body || {};
     if (!device_id)
-      return res
-        .status(400)
-        .json({ ok: false, error: "Missing device_id" });
+      return res.status(400).json({ ok: false, error: "Missing device_id" });
 
     const payload = {
       title,
@@ -266,9 +301,7 @@ app.post("/api/v1/alerts", requireJWT, async (req, res) => {
 
     const to = req.user?.email;
     if (!to)
-      return res
-        .status(400)
-        .json({ ok: false, error: "User email not found in token" });
+      return res.status(400).json({ ok: false, error: "User email not found in token" });
 
     // Intentar outbox+dedupe si existe
     let enqueued = false;
@@ -307,9 +340,7 @@ app.post("/api/v1/alerts", requireJWT, async (req, res) => {
 
 // ========== 404 y errores ===========================================
 app.use((req, res) =>
-  res
-    .status(404)
-    .json({ ok: false, error: "No encontrado", path: req.originalUrl })
+  res.status(404).json({ ok: false, error: "No encontrado", path: req.originalUrl })
 );
 app.use((err, _req, res, _next) => {
   console.error(err);
