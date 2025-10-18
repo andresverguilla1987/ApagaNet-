@@ -1,5 +1,5 @@
-// server.js (ESM) — ApagaNet API (drop-in actualizado)
-// Monta /alerts (TASK_SECRET), /notifications/* y mantiene /v1 (JWT)
+// server.js (ESM) — ApagaNet API (drop-in actualizado + SMTP Phase 3)
+// Monta /alerts (TASK_SECRET), /notifications/*, mantiene /v1 (JWT) y añade /api/email y /email
 
 import "dotenv/config";
 import express from "express";
@@ -9,7 +9,7 @@ import morgan from "morgan";
 import rateLimit from "express-rate-limit";
 import compression from "compression";
 import jwt from "jsonwebtoken";
-import bcrypt from "bcryptjs";           // ya lo usas en otras rutas
+import bcrypt from "bcryptjs"; // ya lo usas en otras rutas
 import crypto from "node:crypto";
 import { pool } from "./src/lib/db.js";
 
@@ -19,12 +19,15 @@ import devices from "./src/routes/devices.js";
 import schedules from "./src/routes/schedules.js";
 import agents from "./src/routes/agents.js";
 import admin from "./src/routes/admin.js";
-import alerts from "./src/routes/alerts.js";          // /v1 (JWT)
+import alerts from "./src/routes/alerts.js"; // /v1 (JWT)
 import mockRouter from "./src/routes/mockRouter.js";
 
 // NUEVO (notificaciones + alerts de sistema)
-import alertsSystem from "./src/routes/alerts-system.js";       // /alerts (TASK_SECRET)
+import alertsSystem from "./src/routes/alerts-system.js"; // /alerts (TASK_SECRET)
 import notificationsRouter from "./src/routes/notifications.js"; // /notifications/* y /admin/notifications/dispatch
+
+// NUEVO (SMTP Phase 3)
+import emailRouter from "./routes/email.js"; // CJS -> default import OK en ESM
 
 // --- App base ---
 const app = express();
@@ -43,11 +46,15 @@ const ORIGINS = [
 
 app.set("trust proxy", 1);
 app.disable("x-powered-by");
-app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  })
+);
 
 const corsOptions = {
   origin(origin, cb) {
-    if (!origin) return cb(null, true);          // Postman/cURL
+    if (!origin) return cb(null, true); // Postman/cURL
     if (ORIGINS.includes(origin)) return cb(null, true);
     return cb(new Error("CORS: Origin not allowed"));
   },
@@ -57,17 +64,28 @@ const corsOptions = {
     "Authorization",
     "x-apaganet-token",
     "x-task-secret",
+    "x-admin-secret", // <-- para router de email
   ],
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   maxAge: 86400,
 };
-app.use((req, res, next) => { res.setHeader("Vary", "Origin"); next(); });
+app.use((req, res, next) => {
+  res.setHeader("Vary", "Origin");
+  next();
+});
 app.use(cors(corsOptions));
 
 app.use(express.json({ limit: "1mb" }));
 app.use(compression());
 app.use(morgan("dev"));
-app.use(rateLimit({ windowMs: 60_000, max: 200, standardHeaders: true, legacyHeaders: false }));
+app.use(
+  rateLimit({
+    windowMs: 60_000,
+    max: 200,
+    standardHeaders: true,
+    legacyHeaders: false,
+  })
+);
 
 // --- Helpers ---
 function requireJWT(req, res, next) {
@@ -90,14 +108,18 @@ function requireJWT(req, res, next) {
 function requireTaskSecret(req, res, next) {
   const expected = (process.env.TASK_SECRET || "").trim();
   if (!expected) {
-    return res.status(500).json({ ok: false, error: "TASK_SECRET no configurado" });
+    return res
+      .status(500)
+      .json({ ok: false, error: "TASK_SECRET no configurado" });
   }
   const h = req.headers.authorization || "";
   const bearer = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
   const headerAlt = (req.headers["x-task-secret"] || "").toString().trim();
   const provided = bearer || headerAlt;
   if (!provided) {
-    return res.status(401).json({ ok: false, error: "Falta credencial admin (Bearer o x-task-secret)" });
+    return res
+      .status(401)
+      .json({ ok: false, error: "Falta credencial admin (Bearer o x-task-secret)" });
   }
   if (provided !== expected) {
     return res.status(401).json({ ok: false, error: "TASK_SECRET inválido" });
@@ -126,9 +148,17 @@ app.get("/api/ping", (_req, res) => res.redirect(307, "/ping"));
 // --- Rutas “abiertas” de prueba que ya usabas ---
 app.get("/agents/modem-compat", async (req, res) => {
   const agent_id = String(req.query.agent_id || "");
-  const report = { id: crypto.randomUUID(), agent_id, devices: [], created_at: new Date().toISOString() };
+  const report = {
+    id: crypto.randomUUID(),
+    agent_id,
+    devices: [],
+    created_at: new Date().toISOString(),
+  };
   try {
-    await pool.query("insert into reports(id, agent_id, created_at) values ($1,$2, now())", [report.id, agent_id]);
+    await pool.query(
+      "insert into reports(id, agent_id, created_at) values ($1,$2, now())",
+      [report.id, agent_id]
+    );
   } catch {}
   res.json({ ok: true, report, fallback: false });
 });
@@ -153,7 +183,7 @@ app.use("/admin", requireTaskSecret, admin);
 app.use("/api/admin", requireTaskSecret, admin);
 
 // --- NUEVO: Notificaciones (suscripciones + dispatch) ---
-app.use("/", notificationsRouter);            // POST /notifications/subscriptions, POST /admin/notifications/dispatch
+app.use("/", notificationsRouter); // POST /notifications/subscriptions, POST /admin/notifications/dispatch
 
 // --- ALERTAS protegidas con JWT (tus /v1) ---
 app.use("/v1", requireJWT, alerts);
@@ -162,8 +192,36 @@ app.use("/api/v1", requireJWT, alerts);
 // --- ALERTAS de sistema (agentes/cron) con TASK_SECRET ---
 app.use("/alerts", requireTaskSecret, alertsSystem);
 
+// === SMTP Phase 3: /api/email y /email =====================================
+// Compatibilidad de headers: mapea x-task-secret / Bearer -> x-admin-secret
+app.use((req, _res, next) => {
+  const hasAdmin = req.headers["x-admin-secret"];
+  if (!hasAdmin) {
+    const bearer =
+      (req.headers.authorization || "").startsWith("Bearer ")
+        ? req.headers.authorization.slice(7).trim()
+        : "";
+    const task = (req.headers["x-task-secret"] || "").toString().trim();
+    const provided = bearer || task;
+    if (provided) {
+      req.headers["x-admin-secret"] = provided; // lo que espera routes/email.js
+    }
+  }
+  next();
+});
+
+// Montaje del router de correo (internamente valida x-admin-secret vs TASK_SECRET)
+app.use("/api/email", emailRouter);
+app.use("/email", emailRouter);
+console.log("[email] Mounted at /api/email and /email");
+// ============================================================================
+
 // --- 404 y errores ---
-app.use((req, res) => res.status(404).json({ ok: false, error: "No encontrado", path: req.originalUrl }));
+app.use((req, res) =>
+  res
+    .status(404)
+    .json({ ok: false, error: "No encontrado", path: req.originalUrl })
+);
 app.use((err, _req, res, _next) => {
   console.error(err);
   res.status(500).json({ ok: false, error: "Server error" });
