@@ -1,4 +1,8 @@
-import pg from "pg";
-const { Pool } = pg;
-const conn = process.env.DATABASE_URL || process.env.PGCONN || "";
-export const pool = new Pool({ connectionString: conn });
+// src/lib/db.js
+import pkg from "pg";
+const { Pool } = pkg;
+
+export const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.PGSSLMODE === "require" ? { rejectUnauthorized: false } : false,
+});
