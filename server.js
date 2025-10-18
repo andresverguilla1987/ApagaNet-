@@ -1,4 +1,5 @@
-// server.js (ESM) — ApagaNet API — Phase 3 (refactor + fixes + email test)
+// server.js (ESM) — ApagaNet API (Phase 3, refactor + fixes + email test)
+
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -17,26 +18,25 @@ import devices from "./src/routes/devices.js";
 import schedules from "./src/routes/schedules.js";
 import agents from "./src/routes/agents.js";
 import admin from "./src/routes/admin.js";
-import alerts from "./src/routes/alerts.js";            // si falta POST /alerts, lo cubre el fallback en su router
+import alerts from "./src/routes/alerts.js";
 import mockRouter from "./src/routes/mockRouter.js";
 import alertsSystem from "./src/routes/alerts-system.js";
 
-// Notificaciones PRO (suscripciones + dispatch) - Phase 3
+// Notificaciones PRO
 import subscriptionsRouter from "./src/routes/subscriptions.js";
 import dispatchRouter from "./src/routes/dispatch.js";
 
 // SMTP Phase 3 (admin por TASK_SECRET)
-import emailRouterModule from "./src/routes/email.js";  // existente en tu árbol
+import emailRouterModule from "./src/routes/email.js";
 const emailRouter = emailRouterModule?.default || emailRouterModule;
 
-// Mailer real (Nodemailer) para endpoint de prueba SMTP
-// (si no existe, el endpoint devolverá error claro)
+// Mailer real opcional (Nodemailer)
 let mailer = null;
 try {
   const mailerModule = await import("./email/mailer.js");
   mailer = mailerModule.default || mailerModule;
 } catch {
-  // sin mailer real: /api/email/test responderá 500 "Mailer no disponible"
+  // sin mailer real: /api/email/test responderá 503 "Mailer no disponible"
 }
 
 const app = express();
@@ -65,7 +65,7 @@ app.use(
 
 const corsOptions = {
   origin(origin, cb) {
-    // Permite herramientas sin origin (curl/Postman) y orígenes whitelisted
+    // Permite curl/Postman (sin Origin) y orígenes whitelisted
     if (!origin) return cb(null, true);
     if (ORIGINS.includes(origin)) return cb(null, true);
     return cb(new Error("CORS_ORIGIN_NOT_ALLOWED"));
@@ -89,7 +89,7 @@ app.use((_, res, next) => {
   next();
 });
 
-// CORS y preflight con respuesta JSON si falla
+// CORS con respuesta JSON si no pasa
 app.use((req, res, next) => {
   cors(corsOptions)(req, res, (err) => {
     if (!err) return next();
@@ -102,7 +102,8 @@ app.options("*", cors(corsOptions));
 
 // ================== Body / compresión / logs / rate =================
 app.use(express.json({ limit: "1mb" }));
-// Manejo explícito de JSON malformado
+
+// Manejo explícito de JSON malformado (4 args)
 app.use((err, _req, res, next) => {
   if (err?.type === "entity.parse.failed") {
     return res.status(400).json({ ok: false, error: "Invalid JSON" });
@@ -135,24 +136,35 @@ export function requireJWT(req, res, next) {
   }
 }
 
-/** Admin con TASK_SECRET
+/** Admin con TASK_SECRET — rotación segura
  *  Authorization: Bearer <TASK_SECRET>  o  header: x-task-secret: <TASK_SECRET>
+ *  Acepta:
+ *    - TASK_SECRET (principal)
+ *    - TASK_SECRETS (opcional, coma-separados para transición)
  */
 export function requireTaskSecret(req, res, next) {
-  const expected = (process.env.TASK_SECRET || "").trim();
-  if (!expected) {
+  const primary = (process.env.TASK_SECRET || "").trim();
+  const extras = (process.env.TASK_SECRETS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const allowed = [primary, ...extras].filter(Boolean);
+  if (allowed.length === 0) {
     return res.status(500).json({ ok: false, error: "TASK_SECRET no configurado" });
   }
+
   const h = req.headers.authorization || "";
   const bearer = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
   const headerAlt = (req.headers["x-task-secret"] || "").toString().trim();
   const provided = bearer || headerAlt;
+
   if (!provided) {
     return res
       .status(401)
       .json({ ok: false, error: "Falta credencial admin (Bearer o x-task-secret)" });
   }
-  if (provided !== expected) {
+  if (!allowed.includes(provided)) {
     return res.status(401).json({ ok: false, error: "TASK_SECRET inválido" });
   }
   return next();
@@ -225,10 +237,9 @@ app.use("/api/devices", requireJWT, devices);
 app.use("/schedules", requireJWT, schedules);
 app.use("/api/schedules", requireJWT, schedules);
 
-app.use("/agents", mockRouter);
-app.use("/agents", agents);
-app.use("/api/agents", mockRouter);
-app.use("/api/agents", agents);
+// Montaje limpio (mock → real) en /agents y /api/agents
+app.use("/agents", mockRouter, agents);
+app.use("/api/agents", mockRouter, agents);
 
 // Mint JWT (DEV)
 app.get("/admin/jwt", requireTaskSecret, (req, res) => {
@@ -244,13 +255,9 @@ app.get("/admin/jwt", requireTaskSecret, (req, res) => {
 app.use("/admin", requireTaskSecret, admin);
 app.use("/api/admin", requireTaskSecret, admin);
 
-// Notificaciones PRO (suscripciones + dispatch) — Phase 3
-app.use("/", (req, res, next) =>
-  subscriptionsRouter({ requireTaskSecret, pool })(req, res, next)
-);
-app.use("/", (req, res, next) =>
-  dispatchRouter({ requireTaskSecret, pool })(req, res, next)
-);
+// Notificaciones PRO
+app.use("/", (req, res, next) => subscriptionsRouter({ requireTaskSecret, pool })(req, res, next));
+app.use("/", (req, res, next) => dispatchRouter({ requireTaskSecret, pool })(req, res, next));
 
 // ALERTAS (JWT)
 app.use("/v1", requireJWT, alerts);
@@ -285,20 +292,23 @@ app.post("/api/email/test", requireTaskSecret, async (req, res) => {
       req.body || {};
     if (!to) return res.status(400).json({ ok: false, error: "Falta 'to'" });
     if (!mailer?.sendAlertEmail) {
-      return res
-        .status(500)
-        .json({ ok: false, error: "Mailer no disponible (sendAlertEmail no definido)" });
+      return res.status(503).json({ ok: false, error: "Mailer no disponible (sendAlertEmail)" });
     }
-    const info = await mailer.sendAlertEmail(to, {
+
+    // Payload mínimo para tu plantilla de alertas
+    const payload = {
       title,
       level,
       deviceName: "SMTP-Test",
       timeISO: new Date().toISOString(),
       detailsUrl: "",
-    });
-    res.status(201).json({ ok: true, messageId: info?.messageId || null });
+      message,
+    };
+
+    const info = await mailer.sendAlertEmail(to, payload);
+    return res.status(201).json({ ok: true, messageId: info?.messageId || null });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e?.message || String(e) });
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
   }
 });
 
