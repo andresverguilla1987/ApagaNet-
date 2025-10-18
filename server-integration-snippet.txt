@@ -1,0 +1,29 @@
+// server-integration-snippet.txt
+// 1) Añade el worker al final de server.js (después de montar rutas)
+import { processEmailBatch } from "./src/lib/emailQueue.js";
+
+setInterval(() => {
+  processEmailBatch(10)
+    .then(c => { if (c>0) console.log(`[email-worker] processed ${c}`); })
+    .catch(e => console.error('[email-worker]', e));
+}, 10_000);
+
+// 2) En tu handler real de /alerts, encola sin duplicar (ejemplo ESM):
+import { enqueueEmail, makeDedupeKey } from "./src/lib/emailQueue.js";
+
+// ... después de guardar la alerta en DB:
+const payload = {
+  title: 'Nueva alerta',
+  level: alert.level,
+  deviceName: device.name,
+  timeISO: new Date(alert.created_at).toISOString(),
+  detailsUrl: `${process.env.PUBLIC_APP_URL}/alerts/${alert.id}`
+};
+const dedupeKey = makeDedupeKey({ to: user.email, template: 'alert', alertId: alert.id });
+await enqueueEmail({
+  to: user.email,
+  subject: `[ApagaNet] ${payload.level}: ${payload.title}`,
+  template: 'alert',
+  payload,
+  dedupeKey
+});
