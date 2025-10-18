@@ -1,0 +1,2 @@
+// En tu server.js (después de crear `app` y middlewares JSON):
+app.use('/email', require('./routes/email'));

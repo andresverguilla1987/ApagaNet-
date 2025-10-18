@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="x-apple-disable-message-reformatting">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ApagaNet alerta</title>
+    <style>
+      body{font-family: system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial,'Noto Sans',sans-serif; margin:0; background:#0b1220; color:#e6edf3;}
+      .wrap{max-width:560px;margin:0 auto;padding:24px;}
+      .card{background:#121a2b;border:1px solid #1f2a44;border-radius:14px;padding:20px;box-shadow:0 8px 20px rgba(0,0,0,.35)}
+      .h1{font-size:18px;margin:0 0 8px}
+      .meta{font-size:12px;color:#b8c3d6;margin-bottom:16px}
+      .btn{display:inline-block;padding:10px 16px;border-radius:10px;text-decoration:none;background:#2563eb;color:#fff}
+      .footer{font-size:12px;color:#94a3b8;margin-top:16px}
+      .pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#1f2a44;color:#bcd}
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <div class="pill">{{level}}</div>
+        <h1 class="h1">{{title}}</h1>
+        <div class="meta">
+          Dispositivo: <strong>{{deviceName}}</strong><br/>
+          Fecha: {{timeISO}}
+        </div>
+        <p>Se detectó una condición que requiere atención.</p>
+        <p><a class="btn" href="{{detailsUrl}}">Ver detalle</a></p>
+        <div class="footer">Este correo fue enviado por ApagaNet.</div>
+      </div>
+    </div>
+  </body>
+</html>

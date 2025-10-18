@@ -1,0 +1,7 @@
+[{{level}}] {{title}}
+Dispositivo: {{deviceName}}
+Fecha: {{timeISO}}
+
+Ver detalle: {{detailsUrl}}
+
+Este correo fue enviado por ApagaNet.
