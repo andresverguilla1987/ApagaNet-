@@ -1,4 +1,4 @@
-// server.js (ESM) — ApagaNet API (drop-in actualizado + SMTP Phase 3)
+// server.js (ESM) — ApagaNet API (drop-in actualizado + SMTP Phase 3 + JWT minter)
 // Monta /alerts (TASK_SECRET), /notifications/*, mantiene /v1 (JWT) y añade /api/email y /email
 
 import "dotenv/config";
@@ -64,7 +64,8 @@ const corsOptions = {
     "Authorization",
     "x-apaganet-token",
     "x-task-secret",
-    "x-admin-secret", // <-- para router de email
+    "x-admin-secret", // router email
+    "Idempotency-Key", // por si lo usas
   ],
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   maxAge: 86400,
@@ -136,98 +137,4 @@ async function dbPing() {
 app.head("/", (_req, res) => res.status(200).end());
 app.get("/", (_req, res) => res.send("ApagaNet API OK"));
 app.get("/ping", async (_req, res) => {
-  try {
-    const r = await dbPing();
-    res.json({ ok: true, db: r.ok, version: VERSION });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: String(e) });
-  }
-});
-app.get("/api/ping", (_req, res) => res.redirect(307, "/ping"));
-
-// --- Rutas “abiertas” de prueba que ya usabas ---
-app.get("/agents/modem-compat", async (req, res) => {
-  const agent_id = String(req.query.agent_id || "");
-  const report = {
-    id: crypto.randomUUID(),
-    agent_id,
-    devices: [],
-    created_at: new Date().toISOString(),
-  };
-  try {
-    await pool.query(
-      "insert into reports(id, agent_id, created_at) values ($1,$2, now())",
-      [report.id, agent_id]
-    );
-  } catch {}
-  res.json({ ok: true, report, fallback: false });
-});
-
-// --- Rutas existentes + aliases /api ---
-app.use("/auth", auth);
-app.use("/api/auth", auth);
-
-app.use("/devices", requireJWT, devices);
-app.use("/api/devices", requireJWT, devices);
-
-app.use("/schedules", requireJWT, schedules);
-app.use("/api/schedules", requireJWT, schedules);
-
-app.use("/agents", mockRouter);
-app.use("/agents", agents);
-app.use("/api/agents", mockRouter);
-app.use("/api/agents", agents);
-
-// --- Admin con TASK_SECRET (sin JWT) ---
-app.use("/admin", requireTaskSecret, admin);
-app.use("/api/admin", requireTaskSecret, admin);
-
-// --- NUEVO: Notificaciones (suscripciones + dispatch) ---
-app.use("/", notificationsRouter); // POST /notifications/subscriptions, POST /admin/notifications/dispatch
-
-// --- ALERTAS protegidas con JWT (tus /v1) ---
-app.use("/v1", requireJWT, alerts);
-app.use("/api/v1", requireJWT, alerts);
-
-// --- ALERTAS de sistema (agentes/cron) con TASK_SECRET ---
-app.use("/alerts", requireTaskSecret, alertsSystem);
-
-// === SMTP Phase 3: /api/email y /email =====================================
-// Compatibilidad de headers: mapea x-task-secret / Bearer -> x-admin-secret
-app.use((req, _res, next) => {
-  const hasAdmin = req.headers["x-admin-secret"];
-  if (!hasAdmin) {
-    const bearer =
-      (req.headers.authorization || "").startsWith("Bearer ")
-        ? req.headers.authorization.slice(7).trim()
-        : "";
-    const task = (req.headers["x-task-secret"] || "").toString().trim();
-    const provided = bearer || task;
-    if (provided) {
-      req.headers["x-admin-secret"] = provided; // lo que espera routes/email.js
-    }
-  }
-  next();
-});
-
-// Montaje del router de correo (internamente valida x-admin-secret vs TASK_SECRET)
-app.use("/api/email", emailRouter);
-app.use("/email", emailRouter);
-console.log("[email] Mounted at /api/email and /email");
-// ============================================================================
-
-// --- 404 y errores ---
-app.use((req, res) =>
-  res
-    .status(404)
-    .json({ ok: false, error: "No encontrado", path: req.originalUrl })
-);
-app.use((err, _req, res, _next) => {
-  console.error(err);
-  res.status(500).json({ ok: false, error: "Server error" });
-});
-
-// --- Start ---
-app.listen(PORT, "0.0.0.0", () => {
-  console.log("ApagaNet API ready on :" + PORT);
-});
+  try
