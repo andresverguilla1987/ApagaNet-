@@ -1,14 +1,10 @@
-# ApagaNet Backend (Postgres + Notifs)
-Fecha: 2025-10-19 04:24
+# ApagaNet — Backend Integrado
+Incluye: Notificaciones + Quiet Hours + Export CSV (memoria).
 
-## Archivos
-- `server.notify.pg.js` — servidor Node con persistencia en Postgres y notificaciones.
-- `schema.sql` — crea tablas mínimas.
-- `.env.sample` — variables de entorno.
-
-## Setup
-1) Crea DB y ejecuta `schema.sql`.
-2) Copia `.env.sample` a `.env` y ajusta valores.
-3) `npm i express cors morgan dotenv jsonwebtoken nanoid stripe node-fetch nodemailer pg`
-4) `node server.notify.pg.js`
-
+## Uso
+1) Guarda `server.notify.integrated.js` en la raíz de tu backend (Render).
+2) `package.json`:
+```json
+{ "type": "module", "scripts": { "start": "node server.notify.integrated.js" } }
+```
+3) Configura `ALLOWED_ORIGINS` con tu dominio Netlify.
