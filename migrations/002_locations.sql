@@ -1,0 +1,10 @@
+-- migrations/002_locations.sql
+CREATE TABLE IF NOT EXISTS locations (
+  id SERIAL PRIMARY KEY,
+  device_id TEXT NOT NULL,
+  user_id INTEGER,
+  lat DOUBLE PRECISION NOT NULL,
+  lng DOUBLE PRECISION NOT NULL,
+  accuracy DOUBLE PRECISION,
+  ts TIMESTAMP NOT NULL DEFAULT NOW()
+);
