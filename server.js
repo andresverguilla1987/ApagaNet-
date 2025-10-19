@@ -9,9 +9,8 @@ import Stripe from 'stripe';
 dotenv.config();
 const app = express();
 app.use(morgan('dev'));
-app.use(express.json({ limit: '1mb' }));
 
-// CORS
+// --- CORS ---
 const allowed = process.env.ALLOWED_ORIGINS ? JSON.parse(process.env.ALLOWED_ORIGINS) : ["*"];
 app.use(cors({
   origin: (origin, cb) => {
@@ -21,15 +20,17 @@ app.use(cors({
   credentials: true
 }));
 
+// --- Estado en memoria (demo) ---
 const state = {
   homes: new Map(),          // homeId -> { devices: Map, modem, alerts: [], geofences: [], locations: Map(deviceId -> [points]) }
-  actions: [],               // queued actions for agents
+  actions: [],               // queued actions for agents (futuro)
   signups: [],
   customers: new Map(),
   subscriptions: []
 };
 const nanoid = customAlphabet('1234567890abcdefghijklmnopqrstuvwxyz', 10);
 
+// --- ENV / Stripe ---
 const JWT_SECRET = process.env.JWT_SECRET || 'demo_jwt_secret_change_me';
 const TASK_SECRET = process.env.TASK_SECRET || 'demo_task_secret_change_me';
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || '';
@@ -37,6 +38,7 @@ const STRIPE_PRICE_ID   = process.env.STRIPE_PRICE_ID   || '';
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || '';
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
 
+// --- Helpers / middlewares ---
 function ensureHome(homeId) {
   if (!state.homes.has(homeId)) {
     state.homes.set(homeId, { devices: new Map(), modem: null, alerts: [], geofences: [], locations: new Map() });
@@ -61,33 +63,91 @@ function authJWT(req, res, next) {
   }
 }
 
-// Health
+// --- Health ---
 app.get(['/','/api/health','/api/ping'], (req, res) => {
   res.json({ ok: true, time: new Date().toISOString(), service: 'ApagaNet Backend PRO (locations)' });
 });
 
-// Auth demo token
+// ──────────────────────────────────────────────────────────────────────────────
+// 1) Webhook Stripe: poner ANTES de express.json para preservar cuerpo crudo
+// ──────────────────────────────────────────────────────────────────────────────
+app.post('/webhooks/stripe', express.raw({ type: 'application/json' }), (req,res)=>{
+  // Nota: Para validar firma, descomenta y usa STRIPE_WEBHOOK_SECRET + constructEvent
+  try {
+    console.log('Webhook received bytes=', req.body?.length ?? '(parsed)');
+  } catch(e) {
+    console.error('webhook error', e);
+  }
+  res.json({ received:true });
+});
+
+// A partir de aquí ya podemos parsear JSON para el resto de rutas
+app.use(express.json({ limit: '1mb' }));
+
+// --- Auth demo (admin) ---
 app.post('/auth/demo-token', (req, res) => {
   const { homeId = 'HOME-DEMO-1' } = req.body || {};
   const token = jwt.sign({ role: 'admin', homeId }, JWT_SECRET, { expiresIn: '2h' });
   res.json({ token, homeId });
 });
 
-// Devices minimal (kept)
+// --- Devices (demo) ---
 app.get('/devices', authJWT, (req, res) => {
   const home = ensureHome(req.user.homeId);
   const devices = Array.from(home.devices.values()).sort((a,b)=>b.lastSeen-a.lastSeen);
   res.json({ devices });
 });
 
-// Alerts
+// ──────────────────────────────────────────────────────────────────────────────
+// 2) Control de pausa / reanudar  ✅ (lo que te faltaba)
+// ──────────────────────────────────────────────────────────────────────────────
+app.post('/control/pause', authJWT, (req, res) => {
+  const { mac, minutes = 15 } = req.body || {};
+  if (!mac) return res.status(400).json({ error: 'mac required' });
+
+  const home = ensureHome(req.user.homeId);
+  const dev = home.devices.get(mac);
+  if (!dev) return res.status(404).json({ error: 'device not found' });
+
+  const until = Date.now() + minutes * 60 * 1000;
+  dev.pausedUntil = until;
+
+  const alert = {
+    id: nanoid(),
+    homeId: req.user.homeId,
+    type: 'pause',
+    message: `Se pausó ${dev.name || mac} por ${minutes} min`,
+    createdAt: Date.now(),
+    read: false
+  };
+  home.alerts.unshift(alert);
+
+  res.json({ ok: true, until, alert });
+});
+
+app.post('/control/resume', authJWT, (req, res) => {
+  const { mac } = req.body || {};
+  if (!mac) return res.status(400).json({ error: 'mac required' });
+
+  const home = ensureHome(req.user.homeId);
+  const dev = home.devices.get(mac);
+  if (!dev) return res.status(404).json({ error: 'device not found' });
+
+  dev.pausedUntil = 0;
+  res.json({ ok: true });
+});
+
+// --- Alerts ---
 app.get('/alerts', authJWT, (req, res) => {
   const home = ensureHome(req.user.homeId);
   res.json({ alerts: home.alerts });
 });
 
-// ---------- Locations ----------
-// POST /locations/report  {deviceId, lat, lng, accuracy?, battery?, at?}
+// ──────────────────────────────────────────────────────────────────────────────
+// Locations & Geofences
+// ──────────────────────────────────────────────────────────────────────────────
+
+// Reportar punto: {homeId, deviceId, lat, lng, accuracy?, battery?, at?}
 app.post('/locations/report', (req, res) => {
   const { homeId, deviceId, lat, lng, accuracy=30, battery=null, at=null } = req.body || {};
   if (!homeId || !deviceId || typeof lat!=='number' || typeof lng!=='number') {
@@ -99,9 +159,9 @@ app.post('/locations/report', (req, res) => {
   if (!home.locations.has(deviceId)) home.locations.set(deviceId, []);
   const list = home.locations.get(deviceId);
   list.push(point);
-  // Keep last 1000 pts per device in memory
+  // Limitar memoria
   if (list.length > 1000) list.splice(0, list.length-1000);
-  // Geofence enter/exit alerts
+  // Alertas de geocerca
   for (const gf of home.geofences) {
     const inside = haversineInRadius(lat, lng, gf.lat, gf.lng, gf.radiusMeters);
     const lastInside = list.length>1 ? haversineInRadius(list[list.length-2].lat, list[list.length-2].lng, gf.lat, gf.lng, gf.radiusMeters) : false;
@@ -115,7 +175,7 @@ app.post('/locations/report', (req, res) => {
   res.json({ ok:true });
 });
 
-// GET /locations/live?deviceId=...  -> last point
+// Último punto vivo
 app.get('/locations/live', authJWT, (req, res) => {
   const home = ensureHome(req.user.homeId);
   const { deviceId } = req.query;
@@ -124,7 +184,7 @@ app.get('/locations/live', authJWT, (req, res) => {
   res.json({ live: list[list.length-1] || null });
 });
 
-// GET /locations/history?deviceId=...&since=ms&until=ms&limit=500
+// Historial
 app.get('/locations/history', authJWT, (req, res) => {
   const home = ensureHome(req.user.homeId);
   const { deviceId, since=0, until=Date.now(), limit=500 } = req.query;
@@ -133,13 +193,11 @@ app.get('/locations/history', authJWT, (req, res) => {
   res.json({ points: list.slice(-(+limit)) });
 });
 
-// Geofences CRUD (memory)
-// GET /geofences
+// Geocercas
 app.get('/geofences', authJWT, (req, res) => {
   const home = ensureHome(req.user.homeId);
   res.json({ geofences: home.geofences });
 });
-// POST /geofences {name, lat, lng, radiusMeters}
 app.post('/geofences', authJWT, (req, res) => {
   const { name, lat, lng, radiusMeters=150 } = req.body || {};
   if (!name || typeof lat!=='number' || typeof lng!=='number') return res.status(400).json({ error:'name, lat, lng required' });
@@ -148,7 +206,6 @@ app.post('/geofences', authJWT, (req, res) => {
   home.geofences.push(gf);
   res.json({ ok:true, geofence: gf });
 });
-// DELETE /geofences/:id
 app.delete('/geofences/:id', authJWT, (req, res) => {
   const home = ensureHome(req.user.homeId);
   const { id } = req.params;
@@ -156,7 +213,7 @@ app.delete('/geofences/:id', authJWT, (req, res) => {
   res.json({ ok:true });
 });
 
-// Haversine helper
+// --- Haversine helper ---
 function haversineInRadius(lat1,lng1,lat2,lng2, radiusMeters){
   const R = 6371000;
   const dLat = (lat2-lat1)*Math.PI/180;
@@ -167,26 +224,32 @@ function haversineInRadius(lat1,lng1,lat2,lng2, radiusMeters){
   return d <= radiusMeters;
 }
 
-// Public signup + billing (same idea)
+// ──────────────────────────────────────────────────────────────────────────────
+// Public signup + billing (Checkout)
+// ──────────────────────────────────────────────────────────────────────────────
 app.post('/public/signup', (req,res)=>{
   const { email, family } = req.body || {};
   if(!email) return res.status(400).json({ error:'email required' });
   state.signups.push({ email, family: family||'', createdAt: Date.now() });
   res.json({ ok:true });
 });
+
 app.post('/billing/checkout', async (req,res)=>{
   try{
     if (!stripe || !STRIPE_PRICE_ID) return res.status(503).json({ error:'billing not configured' });
     const { email, origin } = req.body || {};
     if (!email) return res.status(400).json({ error:'email required' });
-    const success = (origin || process.env.PUBLIC_ORIGIN || '').replace(/\/$/,'') + '/?status=success';
-    const cancel  = (origin || process.env.PUBLIC_ORIGIN || '').replace(/\/$/,'') + '/?status=cancel';
+
+    const base = (origin || process.env.PUBLIC_ORIGIN || '').replace(/\/$/,'');
+    const success = base ? `${base}/?status=success` : 'https://example.com/?status=success';
+    const cancel  = base ? `${base}/?status=cancel`  : 'https://example.com/?status=cancel';
+
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       line_items: [{ price: STRIPE_PRICE_ID, quantity: 1 }],
       customer_email: email,
-      success_url: success || 'https://example.com/?status=success',
-      cancel_url: cancel || 'https://example.com/?status=cancel',
+      success_url: success,
+      cancel_url: cancel,
       metadata: { product: 'ApagaNet Single Plan' }
     });
     res.json({ url: session.url });
@@ -196,16 +259,7 @@ app.post('/billing/checkout', async (req,res)=>{
   }
 });
 
-// Webhooks (raw JSON) — keep simple for demo; add signature verification in prod
-app.post('/webhooks/stripe', express.raw({ type: 'application/json' }), (req,res)=>{
-  // In demo we accept and log (you can wire verification like in prior build)
-  try{
-    console.log('Webhook received len=', req.body?.length || 0);
-  }catch(e){}
-  res.json({ received:true });
-});
-
-// Seed sample
+// --- Seed demo ---
 (function seed(){
   const homeId = 'HOME-DEMO-1';
   const h = ensureHome(homeId);
