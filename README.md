@@ -1,53 +1,15 @@
-# ApagaNet — Demo Backend (Investor Option A)
+# ApagaNet Backend PRO (Locations + Geofences)
+Nuevo:
+- POST /locations/report {homeId, deviceId, lat, lng, accuracy?, battery?, at?}
+- GET  /locations/live?deviceId=...
+- GET  /locations/history?deviceId=...&since=ms&until=ms&limit=500
+- Geofences: GET /geofences, POST /geofences {name,lat,lng,radiusMeters}, DELETE /geofences/:id
+- Alertas automáticas: geofence_enter / geofence_exit
 
-Minimal Express API with in-memory state to demo the flow:
-**agent → device report → admin pauses device → alert appears**.
+Mantiene:
+- /devices, /alerts, /public/signup, /billing/checkout, /webhooks/stripe
 
-## Endpoints
-- `POST /auth/demo-token` → returns `{ token, homeId }` (use for admin requests)
-- `GET /api/health` or `/api/ping` → health check
-- `POST /agents/report` (header `x-task-secret`) → report devices/modem
-- `GET /agents/next-actions` (header `x-task-secret`) → poll actions for router/agent
-- `GET /devices` (Bearer token) → list devices
-- `POST /control/pause` (Bearer token) → queue PAUSE action + create alert
-- `GET /alerts` (Bearer token) → list alerts
-- `PATCH /alerts/:id/read` (Bearer token) → mark alert as read
-
-## Local dev
-```bash
-npm install
-npm run dev
-```
-
-## Render deploy
-- Build Command: `npm install --no-audit --no-fund`
-- Start Command: `node server.js`
-- Environment:
-  - `ALLOWED_ORIGINS` = your Netlify URL in JSON array (e.g., ["https://YOUR.netlify.app"])
-  - `JWT_SECRET` = strong secret
-  - `TASK_SECRET` = strong secret
-
-## PowerShell smoke tests
-```powershell
-$API = "https://YOUR-RENDER.onrender.com"
-
-# 1) Health
-irm "$API/api/health"
-
-# 2) Get admin token
-$t = (irm -Method Post -Body (@{homeId="HOME-DEMO-1"} | ConvertTo-Json) -ContentType "application/json" "$API/auth/demo-token").token
-$hdr = @{ Authorization = "Bearer $t" }
-
-# 3) List devices (seeded)
-irm -Headers $hdr "$API/devices"
-
-# 4) Pause internet for a device
-irm -Method Post -Headers $hdr -Body (@{mac="AA:BB:CC:11:22:33"; minutes=15} | ConvertTo-Json) -ContentType "application/json" "$API/control/pause"
-
-# 5) Check alerts
-irm -Headers $hdr "$API/alerts"
-
-# 6) Agent pulls actions (simulate router)
-$task = @{ "x-task-secret" = "change_me_for_agents" }
-irm -Headers $task "$API/agents/next-actions?homeId=HOME-DEMO-1"
-```
+Deploy en Render:
+- Build: npm i --no-audit --no-fund
+- Start: node server.js
+- ENV ver .env.sample
